@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/logo.png" width="180"></p>
+
 # NoteThing
 
 **Your course, read for you.** Study notes + a prep schedule that shows up in your inbox.
@@ -6,26 +8,7 @@ Drop your course into a folder: the professor's scanned handwritten notes, the l
 
 ## How it works
 
-```mermaid
-flowchart LR
-  subgraph local["content/course (stays on your machine)"]
-    A[Handwritten notes<br/>scanned PDF / images]
-    B[Typed notes .docx]
-    V[Lecture videos<br/>or videos.txt URLs]
-    S[Syllabus]
-    P[Problem sets + solutions]
-    W[Your submitted work]
-  end
-  V -->|faster-whisper<br/>local or SSH| T[Timestamped transcript]
-  A & B & T -->|LLM: merge per lecture| N[Obsidian note<br/>sections + explain callouts<br/>SVG graphs, wikilinks, key terms]
-  S -->|LLM| X[(Neon Postgres<br/>tests, notes, sessions,<br/>quiz items, attempts)]
-  P & W -->|LLM: grade your PS| X
-  N --> X
-  X -->|plan| Sch[Sessions until each test]
-  Sch -->|AgentMail| E[Coach email:<br/>what to read, ~time, quiz]
-  E -->|you reply| G[LLM grades +<br/>re-explains misses]
-  G -->|re-weight weak topics| Sch
-```
+![NoteThing architecture: course folder to transcripts to Obsidian notes and Postgres, then a planner, coach emails, your replies and a grader that feeds back into the plan](docs/architecture.png)
 
 1. **Ingest** walks `content/<course>/` recursively and classifies every file (filename hints, then a cheap model call if unsure): `notes`, `video`, `syllabus`, `problemset`, `student_work` (and `slides`).
 2. **Lectures are grouped** by topic folder + filename stem, so `BudgetConstraint_Scanned.pdf` + `BudgetConstraints.docx` + `video_BC_part1.mp4` become **one** "Budget Constraint" note. Typed notes give accurate text, the scans give graphs and handwritten extras, the transcript gives what the prof actually said, cited by timestamp `(12:34)` or page `(p. 4)`.
