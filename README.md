@@ -16,6 +16,10 @@ Drop your course into a folder: the professor's scanned handwritten notes, the l
 4. **Plan** schedules sessions from today to each test: learn new lectures, practice every other day, full review the day before.
 5. **Coach emails** (via AgentMail) say what to read, how long it'll take, your streak and accuracy by topic, and 3-5 quiz questions. Reply in plain text; you get per-question feedback, a short re-explanation for every miss, and those questions come back in your next session.
 
+## Grade a problem set
+
+Email your answers to the coach inbox (`notething@agentmail.to`) as a PDF or photos, as a new message or as a reply on a session email. NoteThing works out which problem set it is, grades every part against the official solutions (graphs included), and replies with your score, what to fix, and which notes to re-read. The parts you missed come back in your next sessions. No solutions on file? It solves the set itself and tells you the grade is unofficial. Preview without emailing: `pnpm grade path/to/answers.pdf`.
+
 ## Setup
 
 ```bash
@@ -48,7 +52,8 @@ pnpm migrate
 pnpm ingest [course]     # files -> Obsidian notes in vault/<course>/, tests, problem sets
 pnpm plan [course]       # build the session schedule toward each test
 pnpm send-next           # email the next due session
-pnpm poll                # grade replies, send feedback, re-weight the plan
+pnpm poll                # grade quiz replies and emailed problem sets, send feedback, re-weight the plan
+pnpm grade <file...>     # dry run: grade a problem set PDF/photos and print the report (no email)
 pnpm fast-forward 3      # demo: jump the clock and send the next 3 sessions now
 pnpm start               # loop: ingest new files, send due sessions, poll replies every 60s
 pnpm inbox               # create/show the AgentMail inbox
