@@ -75,8 +75,11 @@ function remoteTranscribe(host: string, source: string, out: string, model: stri
     ssh(host, `mkdir -p ${REMOTE_DIR}`);
     scp(path.join(ROOT, "scripts", "transcribe.py"), `${host}:${REMOTE_DIR}/transcribe.py`);
     if (!isUrl) scp(source, `${host}:${remoteIn}`);
-    const quotedIn = `'${remoteIn.replace(/'/g, "'\\''")}'`;
-    ssh(host, `WHISPER_MODEL=${model} ${py} ${REMOTE_DIR}/transcribe.py ${quotedIn} ${remoteOut}`);
+    // ssh runs this through the remote shell, so quote everything that comes from config or input.
+    // `~/` stays unquoted so the remote shell still expands it.
+    const sq = (v: string) => `'${v.replace(/'/g, "'\\''")}'`;
+    const quotedPy = py.startsWith("~/") ? `~/${sq(py.slice(2))}` : sq(py);
+    ssh(host, `WHISPER_MODEL=${sq(model)} ${quotedPy} ${REMOTE_DIR}/transcribe.py ${sq(remoteIn)} ${remoteOut}`);
     scp(`${host}:${remoteOut}`, out);
   } finally {
     // Remote disk can be tight: always clean up what we uploaded.
