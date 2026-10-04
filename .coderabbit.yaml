@@ -1,31 +1,182 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 language: en-US
+
 reviews:
   profile: assertive
   request_changes_workflow: false
   high_level_summary: true
   review_status: true
+  commit_status: true
   collapse_walkthrough: false
+  changed_files_summary: true
+  sequence_diagrams: true
+  estimate_code_review_effort: true
+  assess_linked_issues: true
+  related_issues: true
+  related_prs: true
+  suggested_reviewers: true
   poem: false
+
+  # Labels
+  suggested_labels: true
+  auto_apply_labels: true
+  labeling_instructions:
+    - label: feature
+      instructions: A new user-visible capability (new command, new email type, new provider).
+    - label: fix
+      instructions: A bug fix or a change that makes an existing flow work correctly.
+    - label: docs
+      instructions: Changes to README, CONTRIBUTING, AGENTS.md or other documentation only.
+    - label: privacy
+      instructions: Touches how course content, student data, logs, .gitignore or secrets are handled.
+    - label: coach
+      instructions: Touches the study coach itself - planning, session emails, quiz grading, re-weighting weak topics.
+    - label: ingest
+      instructions: Touches reading course files - classification, transcription, note generation, model calls on course material.
+    - label: infra
+      instructions: CI, tooling, dependencies, database migrations, CodeRabbit config.
+
   auto_review:
     enabled: true
     drafts: false
     base_branches:
       - main
       - ".*"
+
   path_filters:
     - "!pnpm-lock.yaml"
     - "!content/**"
     - "!vault/**"
+
   path_instructions:
     - path: "src/**/*.ts"
       instructions: >-
         TypeScript ESM CLI run with tsx. Flag unhandled promise rejections, SQL built by string
         concatenation (queries must be parameterized), secrets or personal course content being
-        logged or committed, and missing handling of model finish reasons (length / content_filter) and malformed JSON from the model.
+        logged or committed, and missing handling of model finish reasons (length / content_filter)
+        and malformed JSON from the model. Anything parsed from a model response must go through a zod schema.
     - path: "scripts/**/*.py"
       instructions: >-
         Runs on the user's machine or VPS. Check temp files are cleaned up and that untrusted
         input (file paths, URLs) is never passed to a shell.
+    - path: "**/*.md"
+      instructions: >-
+        Plain, human, scannable prose. No marketing hype. Never include real course material,
+        student names or emails, professor names, or local absolute paths in examples.
+
+  pre_merge_checks:
+    docstrings:
+      mode: warning
+      threshold: 70
+    title:
+      mode: warning
+      requirements: >-
+        Short, plain-English sentence that says what changed (e.g. "Make the first real run work").
+        No ticket numbers or emoji required.
+    description:
+      mode: warning
+    issue_assessment:
+      mode: warning
+    custom_checks:
+      - name: "No personal data or course content"
+        mode: error
+        instructions: >-
+          FAIL if the PR adds or modifies any file under content/ or vault/ (other than content/.gitkeep),
+          or adds anything that looks like real course material: lecture notes, problem sets, syllabi,
+          transcripts, generated study notes, scanned PDFs, or video files. FAIL if the diff contains real
+          student names or email addresses, professor or instructor names, university course codes tied
+          to a real course, absolute local paths such as /Users/<name>/ or C:\Users\<name>\, or secrets
+          (API keys, tokens, database connection strings with credentials, .env files). PASS for
+          clearly fake placeholders (jane@example.com, "Jane Doe", COURSE101), values in .env.example
+          that are empty or obviously dummy, and generic code or documentation. When unsure, report
+          what looks suspicious and the file it is in.
+      - name: "Model output is validated"
+        mode: warning
+        instructions: >-
+          For every new or changed code path that parses or consumes a language model response
+          (JSON.parse on model text, reading tool-call arguments, extracting fields from a completion),
+          check that the result is validated with a zod schema (or an equivalent runtime validator)
+          before it is used, and that the code handles a truncated or filtered response
+          (finish_reason of length or content_filter) and a failed parse without crashing or writing
+          bad data. FAIL if model output is cast with `as`, used as `any`, or trusted without validation.
+          PASS if the PR does not touch code that handles model output.
+
+  finishing_touches:
+    docstrings:
+      enabled: true
+    unit_tests:
+      enabled: true
+    autofix:
+      enabled: true
+    fix_ci:
+      enabled: true
+    resolve_merge_conflict:
+      enabled: true
+    custom:
+      - name: validate model output
+        enabled: true
+        instructions: >-
+          Find places where model responses are parsed or consumed without a zod schema and add one,
+          reusing existing schemas in src/llm.ts where possible. Keep behavior the same for valid output.
+
+  tools:
+    gitleaks:
+      enabled: true
+    trufflehog:
+      enabled: true
+    ruff:
+      enabled: true
+    markdownlint:
+      enabled: true
+    yamllint:
+      enabled: true
+    shellcheck:
+      enabled: true
+    actionlint:
+      enabled: true
+    biome:
+      enabled: true
+    languagetool:
+      enabled: true
+      level: default
+    dotenvLint:
+      enabled: true
+    osvScanner:
+      enabled: true
+    github-checks:
+      enabled: true
+
 chat:
   auto_reply: true
+
+knowledge_base:
+  learnings:
+    scope: local
+  issues:
+    scope: local
+  pull_requests:
+    scope: local
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - AGENTS.md
+      - CONTRIBUTING.md
+
+code_generation:
+  docstrings:
+    language: en-US
+    path_instructions:
+      - path: "src/**/*.ts"
+        instructions: >-
+          Short TSDoc comment saying what the function does and what it returns. Do not restate the types.
+  unit_tests:
+    path_instructions:
+      - path: "src/**/*.ts"
+        instructions: >-
+          Use the Node built-in test runner (node:test and node:assert) run through tsx. Test pure
+          functions only (planning dates, file classification, JSON extraction, grading parsing).
+          Never call the network, the database or the model; use fake data, never real course content.
+
+issue_enrichment:
+  planning:
+    enabled: true
