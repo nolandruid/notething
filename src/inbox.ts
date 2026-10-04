@@ -6,6 +6,7 @@ import { claimMessage, ensureProcessedTable, failMessage, finishMessage, GIVE_UP
 import { need } from "./env.js";
 import { gradeProblemSet, identifyProblemSet, recordWeakTopics, renderReport } from "./grade.js";
 import { isImage } from "./llm.js";
+import { practicePartsFor } from "./practice.js";
 import { ensureInbox, esc, hasGradeable, isGradeable, mail, para, senderAddress } from "./mail.js";
 import { errLabel, UserError } from "./redact.js";
 
@@ -70,8 +71,10 @@ export async function pollInbox() {
         await finishMessage(m.messageId, "unknown_set");
         continue;
       }
-      console.log(`   → grading ${files.length} file(s)…`);
-      const report = await gradeProblemSet(target, files, note, skipped);
+      // A reply to a practice email is graded on just the parts that email asked for.
+      const only = await practicePartsFor(target, m.threadId, m.subject ?? "");
+      console.log(`   → ${only ? `practice redo (${only.length} parts), ` : ""}grading ${files.length} file(s)…`);
+      const report = await gradeProblemSet(target, files, note, skipped, only);
       if (!report.found) {
         await replyShort(inbox.id, m.messageId, `I opened your attachment but couldn't find answers to ${target.set} in it. Make sure the pages are in focus and attached, then send it again.`);
         await finishMessage(m.messageId, "no_answers", target.set);

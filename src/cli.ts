@@ -4,6 +4,7 @@ import { gradeFiles } from "./gradecli.js";
 import { pollInbox } from "./inbox.js";
 import { ensureInbox, fastForward, pollReplies, sendNext } from "./mail.js";
 import { plan } from "./plan.js";
+import { practice } from "./practice.js";
 import { errLabel, UserError } from "./redact.js";
 
 const [cmd, arg, ...rest] = process.argv.slice(2);
@@ -17,6 +18,7 @@ const HELP = `NoteThing — your course, read for you.
   pnpm send-next            email the next due study session
   pnpm poll                 grade replies and emailed problem sets, adjust the plan
   pnpm grade <file...>      dry run: grade a problem set PDF/photos and print the report (no email, no DB writes)
+  pnpm practice [course]    email the problem-set parts you missed as questions to redo (--dry-run prints it instead)
   pnpm fast-forward <n>     demo: send the next n sessions right now
   pnpm start                ingest + send + poll every 60s (alias: pnpm run run)
   pnpm inbox                create/show the AgentMail inbox`;
@@ -29,6 +31,7 @@ async function main() {
     case "send-next": return void (await sendNext());
     case "poll": { await pollInbox(); return pollReplies(); }
     case "grade": return gradeFiles([arg, ...rest].filter((f): f is string => !!f));
+    case "practice": return practice([arg, ...rest].filter((a): a is string => !!a));
     case "fast-forward": {
       const n = Number(arg ?? 1);
       if (!Number.isInteger(n) || n < 1) throw new UserError("usage: fast-forward <n>");
