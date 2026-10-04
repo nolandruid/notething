@@ -64,12 +64,23 @@ pnpm inbox               # create/show the AgentMail inbox
 
 Your course materials never enter this repo: `content/`, `vault/` and `.env` are gitignored. Files go only to OpenRouter (and the model provider it routes to) for processing (and to your own machine or VPS for transcription). The repo contains only code.
 
+## How we use CodeRabbit
+
+Every change lands through a pull request, and CodeRabbit automatically reviews every non-draft one. The setup lives in [`.coderabbit.yaml`](.coderabbit.yaml).
+
+- **Review context:** a walkthrough with sequence diagrams, a review effort estimate, related issues and PRs, and suggested labels (`feature`, `fix`, `privacy`, `coach`, `ingest`, ...).
+- **A privacy check that can fail a PR:** the custom pre-merge check "No personal data or course content" fails if a PR adds course material, generated notes, student or professor names, local absolute paths, or secrets. A second check, "Model output is validated", warns when model responses are used without a zod schema.
+- **Scanners and linters:** gitleaks and trufflehog for secrets, ruff for `scripts/*.py`, markdownlint, yamllint, shellcheck, actionlint, biome, LanguageTool for docs, and OSV for dependencies.
+- **Knowledge base:** CodeRabbit reads [`AGENTS.md`](AGENTS.md) and [`CONTRIBUTING.md`](CONTRIBUTING.md) as review guidelines, and keeps learnings from our replies to its comments scoped to this repo.
+- **Generated tests and docstrings:** `@coderabbitai generate unit tests` opens a PR with tests for pure functions (planning, parsing, grading). Docstrings and a custom "validate model output" recipe are available as finishing touches.
+- **Issues to plans:** comment `@coderabbitai plan` on a roadmap issue to get an implementation plan before writing code.
+
 ## Built with
 
 - [OpenRouter](https://openrouter.ai): one API for the models that read handwriting and graphs, write notes, quizzes and grades
 - [Neon](https://neon.tech): serverless Postgres for courses, notes, sessions and attempts
 - [AgentMail](https://agentmail.to): the coach's inbox; sends sessions and receives your replies
-- [CodeRabbit](https://coderabbit.ai): reviews every PR
+- [CodeRabbit](https://coderabbit.ai): automatically reviews every non-draft PR
 - [faster-whisper](https://github.com/SYSTRAN/faster-whisper): lecture transcription
 
 ## License
