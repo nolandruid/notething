@@ -60,6 +60,16 @@ pnpm start               # loop: ingest new files, send due sessions, poll repli
 pnpm inbox               # create/show the AgentMail inbox
 ```
 
+## Demo mode with Neon branches
+
+Neon branches are copy-on-write, so creating one is instant and costs nothing until data changes. Save your good state (notes ingested, plan built) once, then run every demo on a throwaway copy and reset it in a second. This needs `NEON_API_KEY` and `NEON_PROJECT_ID` in `.env` (see `.env.example`); without them these commands just say so and nothing else changes.
+
+```bash
+pnpm demo:snapshot   # save the current database as branch demo-baseline
+pnpm demo:reset      # fresh demo-run branch from the baseline; .env points at it (DEMO_DATABASE_URL)
+pnpm demo:off        # back to the main database
+```
+
 ## Privacy
 
 Your course materials never enter this repo: `content/`, `vault/` and `.env` are gitignored. Files go only to OpenRouter (and the model provider it routes to) for processing (and to your own machine or VPS for transcription). The repo contains only code.

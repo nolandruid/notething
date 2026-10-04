@@ -19,6 +19,9 @@
     "run": "tsx src/cli.ts run",
     "start": "tsx src/cli.ts run",
     "inbox": "tsx src/cli.ts inbox",
+    "demo:snapshot": "tsx src/cli.ts demo-snapshot",
+    "demo:reset": "tsx src/cli.ts demo-reset",
+    "demo:off": "tsx src/cli.ts demo-off",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

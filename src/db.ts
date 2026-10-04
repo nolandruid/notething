@@ -1,14 +1,17 @@
 import { neon } from "@neondatabase/serverless";
-import { need } from "./env.js";
+import { need, opt } from "./env.js";
 
 type Sql = ReturnType<typeof neon>;
 let _sql: Sql | undefined;
 
 /** Neon HTTP client (tagged template: sql`select ...`). */
 export function db(): Sql {
-  _sql ??= neon(need("DATABASE_URL", "Create a free Postgres DB at https://neon.tech and paste its connection string."));
+  _sql ??= neon(opt("DEMO_DATABASE_URL") || need("DATABASE_URL", "Create a free Postgres DB at https://neon.tech and paste its connection string."));
   return _sql;
 }
+
+/** One-line, secret-free description of which database we're talking to. */
+export const dbLabel = () => (opt("DEMO_DATABASE_URL") ? 'db: demo branch "demo-run"' : "db: main");
 
 /** Run a parameterized query and get typed rows back. */
 export async function q<T = Record<string, any>>(text: string, params: unknown[] = []): Promise<T[]> {

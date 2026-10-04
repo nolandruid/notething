@@ -1,4 +1,5 @@
-import { migrate } from "./db.js";
+import { demoOff, demoReset, demoSnapshot } from "./branches.js";
+import { dbLabel, migrate } from "./db.js";
 import { ingest } from "./ingest.js";
 import { gradeFiles } from "./gradecli.js";
 import { pollInbox } from "./inbox.js";
@@ -6,6 +7,7 @@ import { ensureInbox, fastForward, pollReplies, sendNext } from "./mail.js";
 import { plan } from "./plan.js";
 
 const [cmd, arg, ...rest] = process.argv.slice(2);
+const DB_COMMANDS = new Set(["migrate", "ingest", "plan", "send-next", "poll", "grade", "fast-forward", "run", "inbox"]);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const HELP = `NoteThing — your course, read for you.
@@ -18,10 +20,17 @@ const HELP = `NoteThing — your course, read for you.
   pnpm grade <file...>      dry run: grade a problem set PDF/photos and print the report (no email, no DB writes)
   pnpm fast-forward <n>     demo: send the next n sessions right now
   pnpm start                ingest + send + poll every 60s (alias: pnpm run run)
-  pnpm inbox                create/show the AgentMail inbox`;
+  pnpm inbox                create/show the AgentMail inbox
+  pnpm demo:snapshot        Neon: save the current database as branch demo-baseline
+  pnpm demo:reset           Neon: fresh throwaway demo-run branch from demo-baseline, used until demo:off
+  pnpm demo:off             go back to the main database`;
 
 async function main() {
+  if (cmd && DB_COMMANDS.has(cmd)) console.log(dbLabel());
   switch (cmd) {
+    case "demo-snapshot": return demoSnapshot();
+    case "demo-reset": return demoReset();
+    case "demo-off": return demoOff();
     case "migrate": return migrate();
     case "ingest": return ingest(arg);
     case "plan": return plan(arg);
