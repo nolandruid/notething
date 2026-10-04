@@ -9,7 +9,7 @@ interface Test { name: string; date: string | null; topics: string[] }
 const at = (day: Date) => { const d = new Date(day); d.setHours(STUDY_HOUR, 0, 0, 0); return d; };
 const addDays = (d: Date, n: number) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
 
-/** Ask Claude which notes each test covers (falls back to "all notes"). */
+/** Ask the model which notes each test covers (falls back to "all notes"). */
 async function mapTestsToNotes(tests: Test[], notes: Note[]): Promise<Record<string, string[]>> {
   const all = Object.fromEntries(tests.map((t) => [t.name, notes.map((n) => n.slug)]));
   if (notes.length <= 1) return all;

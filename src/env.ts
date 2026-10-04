@@ -16,8 +16,8 @@ export const opt = (name: string, fallback = ""): string => process.env[name]?.t
 export const ROOT = process.cwd();
 export const CONTENT_DIR = path.join(ROOT, "content");
 export const VAULT_DIR = path.resolve(opt("VAULT_DIR", path.join(ROOT, "vault")));
-export const MODEL = opt("NOTETHING_MODEL", "claude-sonnet-5-5");
-export const CHEAP_MODEL = opt("NOTETHING_CHEAP_MODEL", "claude-haiku-4-5");
+export const MODEL = opt("NOTETHING_MODEL", "openai/gpt-6-luna");
+export const CHEAP_MODEL = opt("NOTETHING_CHEAP_MODEL", "openai/gpt-5-nano");
 export const STUDY_HOUR = (() => {
   const h = Number(opt("STUDY_HOUR", "18"));
   if (!Number.isInteger(h) || h < 0 || h > 23) {

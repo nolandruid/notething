@@ -21,11 +21,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.131.0",
     "@neondatabase/serverless": "^1.2.0",
     "agentmail": "^0.5.35",
     "dotenv": "^18.0.5",
     "mammoth": "^1.13.0",
+    "openai": "^7.28.0",
     "zod": "^4.6.5"
   },
   "devDependencies": {
