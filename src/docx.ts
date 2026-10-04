@@ -99,7 +99,10 @@ export async function readDocx(file: string): Promise<DocxContent> {
         else if (t === "a:blip") out += ` ${await picture(c.getAttribute("r:embed"))} `;
         else if (t === "v:imagedata") out += ` ${await picture(c.getAttribute("r:id"))} `;
         else if (t === "w:pPr" || t === "w:rPr") continue;
-        else await walk(c);
+        else if (t === "mc:AlternateContent") { // Word stores one picture twice (modern + legacy); read only one
+          const branch = kids(c).find((k) => name(k) === "mc:Choice") ?? kids(c).find((k) => name(k) === "mc:Fallback");
+          if (branch) await walk(branch);
+        } else await walk(c);
       }
     };
     await walk(p);
@@ -111,7 +114,7 @@ export async function readDocx(file: string): Promise<DocxContent> {
   const blocks = async (parent: N): Promise<void> => {
     for (const c of kids(parent)) {
       if (name(c) === "w:p") { const s = await inline(c); if (s) lines.push(s); }
-      else if (name(c) === "w:tbl" || name(c) === "w:tr" || name(c) === "w:tc" || name(c) === "w:sdt" || name(c) === "w:sdtContent") await blocks(c);
+      else if (name(c) === "w:tbl" || name(c) === "w:tr" || name(c) === "w:tc" || name(c) === "w:sdt" || name(c) === "w:sdtContent" || name(c) === "w:customXml") await blocks(c);
     }
   };
   await blocks(body);

@@ -14,6 +14,7 @@
     "plan": "tsx src/cli.ts plan",
     "send-next": "tsx src/cli.ts send-next",
     "poll": "tsx src/cli.ts poll",
+    "grade": "tsx src/cli.ts grade",
     "fast-forward": "tsx src/cli.ts fast-forward",
     "run": "tsx src/cli.ts run",
     "start": "tsx src/cli.ts run",

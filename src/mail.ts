@@ -1,7 +1,7 @@
 import { AgentMailClient } from "agentmail";
 import path from "node:path";
 import { z } from "zod";
-import { getSetting, now, q, setSetting } from "./db.js";
+import { claimMessage, ensureProcessedTable, getSetting, isProcessed, now, q, setSetting } from "./db.js";
 import { isoDate, need, opt, parseDay, STUDY_HOUR, VAULT_DIR } from "./env.js";
 import { askJSON } from "./llm.js";
 
@@ -12,7 +12,7 @@ interface Session {
 interface QuizItem { id: number; question: string; answer: string; topic: string; note_slug: string | null; is_retry: boolean }
 
 let _mail: AgentMailClient | undefined;
-const mail = () => (_mail ??= new AgentMailClient({ apiKey: need("AGENTMAIL_API_KEY", "Get one at https://agentmail.to") }));
+export const mail = () => (_mail ??= new AgentMailClient({ apiKey: need("AGENTMAIL_API_KEY", "Get one at https://agentmail.to") }));
 
 // ---------- inbox ----------
 
@@ -83,7 +83,7 @@ const SessionSchema = z.object({
   })),
 });
 
-const COACH = `You are NoteThing, a personal study coach emailing a university student one study session at a time.
+export const COACH = `You are NoteThing, a personal study coach emailing a university student one study session at a time.
 Voice: warm, encouraging, but direct and specific — like a great TA. No fluff, no emojis spam. Plain text (light markdown ok, LaTeX as $...$).
 Use the student's track record: name weak topics and numbers ("you missed 2/3 on elasticity last time, so today we revisit it").
 Quiz questions should be exam-style (model them on the course's problem sets when provided), answerable by email in a few lines.`;
@@ -124,10 +124,10 @@ ${JSON.stringify(problems)}
   return { plan, items, notes, progress: progressLine(st) };
 }
 
-const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-const para = (s: string) => esc(s).replace(/\n/g, "<br>");
-const notePath = (course: string, slug: string) => path.join(VAULT_DIR, course, `${slug}.md`);
-const obsidian = (p: string) => `obsidian://open?path=${encodeURIComponent(p)}`;
+export const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+export const para = (s: string) => esc(s).replace(/\n/g, "<br>");
+export const notePath = (course: string, slug: string) => path.join(VAULT_DIR, course, `${slug}.md`);
+export const obsidian = (p: string) => `obsidian://open?path=${encodeURIComponent(p)}`;
 
 function render(s: Session, c: Awaited<ReturnType<typeof composeSession>>) {
   const { plan, items, notes, progress } = c;
@@ -191,7 +191,7 @@ export async function fastForward(n: number) {
 // ---------- replies & grading ----------
 
 /** "Nolan <nolan@x.com>" -> "nolan@x.com" (lowercased). */
-const senderAddress = (from: string) => (from.match(/<([^>]+)>/)?.[1] ?? from).trim().toLowerCase();
+export const senderAddress = (from: string) => (from.match(/<([^>]+)>/)?.[1] ?? from).trim().toLowerCase();
 
 const GradeSchema = z.object({
   results: z.array(z.object({
@@ -204,32 +204,102 @@ const GradeSchema = z.object({
   summary: z.string().describe("2-3 sentence coach wrap-up: score, what's solid, what we'll revisit next session"),
 });
 
-async function bumpWeakTopics(s: Session, missed: QuizItem[]) {
+export interface Retry { question: string; answer: string; topic: string; note_slug: string | null }
+
+/**
+ * Push missed material into the next pending session (creating a practice session if none is left):
+ * its topics + notes get a "revisit" entry and each missed question comes back as a retry quiz item.
+ * Safe to call twice for the same items.
+ */
+export async function pushRetries(target: { course: string; test_name: string | null }, missed: Retry[]) {
   if (!missed.length) return;
-  let next = (await q<Session>(`select * from sessions where course = $1 and status = 'pending' order by scheduled_for limit 1`, [s.course]))[0];
+  let next = (await q<Session>(`select * from sessions where course = $1 and status = 'pending' order by scheduled_for limit 1`, [target.course]))[0];
   if (!next) {
     const d = await now(); d.setDate(d.getDate() + 1); d.setHours(STUDY_HOUR, 0, 0, 0);
-    next = (await q<Session>(`insert into sessions (course, scheduled_for, kind, test_name) values ($1,$2,'practice',$3) returning *`, [s.course, d, s.test_name]))[0];
+    next = (await q<Session>(`insert into sessions (course, scheduled_for, kind, test_name) values ($1,$2,'practice',$3) returning *`, [target.course, d, target.test_name]))[0];
   }
   const topics = [...new Set([...next.topics, ...missed.map((m) => `revisit: ${m.topic}`)])];
   const slugs = [...new Set([...next.note_slugs, ...missed.map((m) => m.note_slug).filter((x): x is string => !!x)])];
   await q(`update sessions set topics = $2, note_slugs = $3 where id = $1`, [next.id, topics, slugs]);
   for (const m of missed)
-    await q(`insert into quiz_items (session_id, question, answer, topic, note_slug, is_retry) values ($1,$2,$3,$4,$5,true)`, [next.id, m.question, m.answer, m.topic, m.note_slug]);
+    await q(`insert into quiz_items (session_id, question, answer, topic, note_slug, is_retry)
+             select $1::int,$2::text,$3::text,$4::text,$5::text,true where not exists (select 1 from quiz_items where session_id = $1::int and question = $2::text and is_retry)`,
+      [next.id, m.question, m.answer, m.topic, m.note_slug]);
   console.log(`   ↻ ${missed.length} missed topic(s) pushed into session #${next.id}`);
+}
+
+const bumpWeakTopics = (s: Session, missed: QuizItem[]) => pushRetries(s, missed);
+
+// ---------- replies that aren't really answers ----------
+
+/** Words that make up a reply like "Test", "ok thanks" or "got it": not an attempt at the quiz. */
+const FILLER = new Set(["test", "testing", "tests", "ok", "okay", "k", "kk", "thanks", "thank", "you", "thx", "ty", "hi", "hello", "hey", "yes", "yeah", "yep", "no", "sure", "got", "it", "done", "cool", "nice", "great", "good", "please", "lol", "hmm", "a", "the", "this", "is", "works", "working"]);
+
+/** Drop quoted history ("> ..." lines, "On <date> ... wrote:" and everything after it) and a "Sent from" footer. */
+export function stripQuoted(text: string): string {
+  const out: string[] = [];
+  for (const line of text.replace(/\r/g, "").split("\n")) {
+    if (/^\s*(on .{5,200}wrote:?|-{2,}\s*original message\s*-{2,}|from:\s.+@.+)\s*$/i.test(line) || /^\s*sent from my /i.test(line)) break;
+    if (/^\s*>/.test(line)) continue;
+    out.push(line);
+  }
+  return out.join("\n").trim();
+}
+
+/** True when a reply has no real answers: empty after stripping quoted text, or only filler like "Test" / "ok". */
+export function isEmptyAnswer(text: string): boolean {
+  const t = stripQuoted(text);
+  if (!/[\p{L}\p{N}]/u.test(t)) return true;
+  if (/\d/.test(t)) return false; // numbered answers, numbers, equations
+  const words = t.toLowerCase().split(/[^\p{L}']+/u).filter(Boolean);
+  return words.length <= 6 && words.every((w) => FILLER.has(w));
+}
+
+/** PDFs and photos worth grading (ignores tiny inline signature images). */
+export function isGradeable(a: { filename?: string; contentType?: string; size: number; contentDisposition?: string }): boolean {
+  if (a.size < 5_000 || (a.contentDisposition === "inline" && a.size < 50_000)) return false;
+  const kind = `${a.contentType ?? ""} ${a.filename ?? ""}`.toLowerCase();
+  return /application\/pdf|image\/|\.(pdf|png|jpe?g|webp|gif|heic|heif)\b/.test(kind);
+}
+export const hasGradeable = (m: { attachments?: { filename?: string; contentType?: string; size: number; contentDisposition?: string }[] }) => !!m.attachments?.some(isGradeable);
+
+async function askForAnswers(inboxId: string, messageId: string) {
+  const text = "I didn't see any answers in that reply, so I haven't graded anything. Reply with your answers numbered 1, 2, 3… (just a line or two each is fine) and I'll grade them. This session stays open until then.\n\n— NoteThing";
+  const html = `<div style="font-family:-apple-system,Segoe UI,sans-serif;max-width:620px;line-height:1.5;color:#222"><p>I didn't see any answers in that reply, so I haven't graded anything.</p><p>Reply with your answers numbered 1, 2, 3… (just a line or two each is fine) and I'll grade them. This session stays open until then.</p><p style="color:#888">— NoteThing</p></div>`;
+  await mail().inboxes.messages.reply(inboxId, messageId, { text, html });
 }
 
 export async function pollReplies() {
   const inbox = await ensureInbox();
+  await ensureProcessedTable();
+  const student = need("STUDENT_EMAIL").toLowerCase();
   const open = await q<Session>(`select * from sessions where status = 'sent' and thread_id is not null order by sent_at`);
+  const bodyOf = (m: { extractedText?: string; text?: string; preview?: string }) => m.extractedText ?? m.text ?? m.preview ?? "";
   for (const s of open) {
     const thread = await mail().inboxes.threads.get(inbox.id, s.thread_id!);
     // Only the student can answer: ignore the coach's own messages and anyone else on the thread.
-    const student = need("STUDENT_EMAIL").toLowerCase();
-    const replies = thread.messages.filter((m) => senderAddress(m.from) === student);
-    const reply = replies.at(-1);
-    if (!reply) continue;
-    const answer = reply.extractedText ?? reply.text ?? reply.preview ?? "";
+    // Replies with PDFs/photos attached are emailed problem sets; pollInbox grades those.
+    const candidates = thread.messages.filter((m) => senderAddress(m.from) === student && !hasGradeable(m));
+    const fresh: typeof candidates = [];
+    for (const m of candidates) if (!(await isProcessed(m.messageId))) fresh.push(m);
+    if (!fresh.length) continue;
+
+    // Grade the latest reply that has real answers; "Test" / "ok" follow-ups don't count.
+    const reply = [...fresh].reverse().find((m) => !isEmptyAnswer(bodyOf(m)));
+    const dismiss = async (kept?: string) => {
+      const claimed: string[] = [];
+      for (const m of fresh) if (m.messageId !== kept && (await claimMessage(m.messageId, "no_answers"))) claimed.push(m.messageId);
+      return claimed;
+    };
+    if (!reply) {
+      const claimed = await dismiss();
+      if (claimed.length) {
+        console.log(`📥 Reply on session #${s.id} has no answers; asking for them (session stays open)`);
+        await askForAnswers(inbox.id, fresh.at(-1)!.messageId);
+      }
+      continue;
+    }
+    const answer = bodyOf(reply);
     const items = await q<QuizItem>(`select * from quiz_items where session_id = $1 order by is_retry desc, id`, [s.id]);
     console.log(`📥 Reply on session #${s.id} from ${reply.from}; grading ${items.length} answers…`);
     const g = await askJSON(GradeSchema, [{
@@ -238,17 +308,30 @@ export async function pollReplies() {
     }], { system: COACH, maxTokens: 8000 });
 
     const byId = new Map(items.map((it) => [it.id, it]));
-    for (const r of g.results) if (byId.has(r.quiz_item_id))
+    // Only trust results that point at a real question in this session, once each.
+    const seen = new Set<number>();
+    const results = g.results.filter((r) => byId.has(r.quiz_item_id) && !seen.has(r.quiz_item_id) && !!seen.add(r.quiz_item_id));
+    if (!results.length) throw new Error("The grader's results didn't match any question in this session");
+    if (results.every((r) => !r.response.trim())) {
+      // The model found nothing it could call an answer: don't count a blank reply as all wrong.
+      console.log(`📥 Reply on session #${s.id} has no answers; asking for them (session stays open)`);
+      await dismiss();
+      await askForAnswers(inbox.id, reply.messageId);
+      continue;
+    }
+    for (const r of results)
       await q(`insert into attempts (quiz_item_id, response, correct, feedback, reply_message_id) values ($1,$2,$3,$4,$5)`, [r.quiz_item_id, r.response, r.correct, r.feedback, reply.messageId]);
-    const missed = g.results.filter((r) => !r.correct).map((r) => byId.get(r.quiz_item_id)).filter((x): x is QuizItem => !!x);
-    const score = `${g.results.length - missed.length}/${g.results.length}`;
+    await dismiss(reply.messageId);
 
-    const text = [g.summary, "", `Score: ${score}`, "", ...g.results.map((r, i) => {
+    const missed = results.filter((r) => !r.correct).map((r) => byId.get(r.quiz_item_id)).filter((x): x is QuizItem => !!x);
+    const score = `${results.length - missed.length}/${results.length}`;
+
+    const text = [g.summary, "", `Score: ${score}`, "", ...results.map((r, i) => {
       const it = byId.get(r.quiz_item_id);
       return `${i + 1}. ${r.correct ? "✅" : "❌"} ${it?.question ?? ""}\n   ${r.feedback}${r.reexplain ? `\n   Quick re-explain: ${r.reexplain}` : ""}${!r.correct && it ? `\n   Model answer: ${it.answer}` : ""}`;
     }), "", missed.length ? "I've added these to your next session so we lock them in." : "Clean sweep. Next session will push a bit further.", "", "— NoteThing"].join("\n");
     const html = `<div style="font-family:-apple-system,Segoe UI,sans-serif;max-width:620px;line-height:1.5;color:#222">
-<p>${para(g.summary)}</p><p><b>Score: ${score}</b></p><ol>${g.results.map((r) => {
+<p>${para(g.summary)}</p><p><b>Score: ${score}</b></p><ol>${results.map((r) => {
       const it = byId.get(r.quiz_item_id);
       return `<li style="margin-bottom:10px">${r.correct ? "✅" : "❌"} ${para(it?.question ?? "")}<br><span style="color:#444">${para(r.feedback)}</span>${r.reexplain ? `<br><span style="color:#b4532a"><b>Re-explain:</b> ${para(r.reexplain)}</span>` : ""}${!r.correct && it ? `<br><span style="color:#555"><b>Model answer:</b> ${para(it.answer)}</span>` : ""}</li>`;
     }).join("")}</ol><p>${missed.length ? "I've added these to your next session so we lock them in." : "Clean sweep. Next session will push a bit further."}</p><p style="color:#888">— NoteThing</p></div>`;
