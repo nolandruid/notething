@@ -79,7 +79,12 @@ export async function pollInbox() {
       await recordWeakTopics(report, `email:${m.messageId}`); // idempotent, so a retry after a failed send doesn't double up
       const { text, html } = renderReport(report);
       await mail().inboxes.messages.reply(inbox.id, m.messageId, { text, html });
-      await finishMessage(m.messageId, "graded", `${target.set} ${report.score.earned}/${report.score.possible}`);
+      try {
+        await finishMessage(m.messageId, "graded", `${target.set} ${report.score.earned}/${report.score.possible}`);
+      } catch (e) {
+        // The report is already in the student's inbox; failing here would make the next poll send it again.
+        console.error(`   ⚠ report sent but status not recorded: ${(e as Error).message}`);
+      }
       console.log(`   ✓ ${target.set} graded ${report.score.earned}/${report.score.possible} (${report.score.pct}%), report sent`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

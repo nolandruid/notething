@@ -308,8 +308,6 @@ export async function pollReplies() {
     }], { system: COACH, maxTokens: 8000 });
 
     const byId = new Map(items.map((it) => [it.id, it]));
-    for (const r of g.results) if (byId.has(r.quiz_item_id))
-      await q(`insert into attempts (quiz_item_id, response, correct, feedback, reply_message_id) values ($1,$2,$3,$4,$5)`, [r.quiz_item_id, r.response, r.correct, r.feedback, reply.messageId]);
     if (g.results.every((r) => !r.response.trim())) {
       // The model found nothing it could call an answer: don't count a blank reply as all wrong.
       console.log(`📥 Reply on session #${s.id} has no answers; asking for them (session stays open)`);
@@ -317,6 +315,8 @@ export async function pollReplies() {
       await askForAnswers(inbox.id, reply.messageId);
       continue;
     }
+    for (const r of g.results) if (byId.has(r.quiz_item_id))
+      await q(`insert into attempts (quiz_item_id, response, correct, feedback, reply_message_id) values ($1,$2,$3,$4,$5)`, [r.quiz_item_id, r.response, r.correct, r.feedback, reply.messageId]);
     await dismiss(reply.messageId);
 
     const missed = g.results.filter((r) => !r.correct).map((r) => byId.get(r.quiz_item_id)).filter((x): x is QuizItem => !!x);

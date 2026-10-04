@@ -140,8 +140,11 @@ export async function gradeProblemSet(target: Target, files: string[], note = ""
   const problems = await q<Problem>(`select number, topic, question, solution from problems where course = $1 and set_name = $2 order by id`, [target.course, target.set]);
   if (!problems.length) throw new Error(`No ${target.set} problems for ${target.course}; run pnpm ingest first.`);
   const notes = await q<{ slug: string; title: string; markdown: string }>(`select slug, title, markdown from notes where course = $1 order by slug`, [target.course]);
-  const official = problems.every((p) => !!p.solution?.trim());
   const given = await officialFiles(target.course, target.set);
+  // Official solutions exist if every part has one on record, or a solutions PDF is attached to cover parts ingestion left blank.
+  // A problem-only PDF is not a solution source.
+  const solutionPdf = given.some((f) => /solution|soln|answer/i.test(path.basename(f)));
+  const official = problems.every((p) => !!p.solution?.trim()) || solutionPdf;
 
   const blocks: Block[] = [{ type: "text", text: `Course ${target.course}, ${target.set}. ${official ? "Official solutions are available." : "There are NO official solutions for some or all parts."}` }];
   for (const f of given) blocks.push({ type: "text", text: `[Official material: ${path.basename(f)}]` }, fileBlock(f));
@@ -258,10 +261,13 @@ ${r.review.length ? `<h3 style="margin-bottom:4px">Review</h3><ul>${r.review.map
 
 /** Record each part as a result per topic, and queue what was missed into the next session so it gets re-practised. Idempotent per source. */
 export async function recordWeakTopics(r: Report, source: string, maxRetries = 4) {
-  await q(`delete from seed_results where course = $1 and source = $2`, [r.course, source]);
-  for (const p of r.parts)
-    await q(`insert into seed_results (course, topic, correct, source, note) values ($1,$2,$3,$4,$5)`,
-      [r.course, p.topic, p.status === "correct", source, `${r.set} Q${p.number}: ${(p.mistake || p.what_was_right || p.status).slice(0, 200)}`]);
+  // One statement, so a failure can never leave the source with only some of its rows.
+  await q(
+    `with cleared as (delete from seed_results where course = $1 and source = $2)
+     insert into seed_results (course, topic, correct, source, note)
+     select $1, t.topic, t.correct, $2, t.note from unnest($3::text[], $4::boolean[], $5::text[]) as t(topic, correct, note)`,
+    [r.course, source, r.parts.map((p) => p.topic), r.parts.map((p) => p.status === "correct"),
+      r.parts.map((p) => `${r.set} Q${p.number}: ${(p.mistake || p.what_was_right || p.status).slice(0, 200)}`)]);
   const test = (await q<{ name: string }>(`select name from tests where course = $1 and (date is null or date >= current_date) order by date nulls last limit 1`, [r.course]))[0];
   const missed: Retry[] = missedParts(r.parts).slice(0, maxRetries).map((p) => ({
     question: `(${r.set} ${p.number}) ${p.question}`, answer: p.solution ?? p.fix, topic: p.topic, note_slug: p.note_slug,
