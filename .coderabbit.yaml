@@ -1,0 +1,30 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-US
+reviews:
+  profile: assertive
+  request_changes_workflow: false
+  high_level_summary: true
+  review_status: true
+  collapse_walkthrough: false
+  poem: false
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - main
+  path_filters:
+    - "!pnpm-lock.yaml"
+    - "!content/**"
+    - "!vault/**"
+  path_instructions:
+    - path: "src/**/*.ts"
+      instructions: >-
+        TypeScript ESM CLI run with tsx. Flag unhandled promise rejections, SQL built by string
+        concatenation (queries must be parameterized), secrets or personal course content being
+        logged or committed, and missing handling of Claude stop reasons (refusal / max_tokens).
+    - path: "scripts/**/*.py"
+      instructions: >-
+        Runs on the user's machine or VPS. Check temp files are cleaned up and that untrusted
+        input (file paths, URLs) is never passed to a shell.
+chat:
+  auto_reply: true
