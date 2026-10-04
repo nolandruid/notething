@@ -198,17 +198,34 @@ const NoteSchema = z.object({
   })),
 });
 
-const NOTE_SYSTEM = `You turn a professor's course materials into excellent Obsidian study notes for a student.
+const NOTE_SYSTEM = `You turn a professor's course materials into excellent Obsidian study notes for a student who will be tested on them.
+
 Format rules:
 - '# <Lecture title>' then sections with '## ' headings following the lecture's structure.
-- Under EACH section: first the cleaned-up content (faithful transcription of the professor's notes as tidy bullets, with every formula in LaTeX $...$ or $$...$$), THEN a callout explaining it in plain English:
+- Under EACH section: first the cleaned-up content (faithful, tidy bullets; every formula in LaTeX $...$ or $$...$$), THEN a callout that genuinely helps the student understand it:
   > [!explain]
-  > <intuitive explanation, why it matters, a quick example>
+  > <2-4 sentences: the intuition in plain English, WHY it works or matters, and one concrete example with real numbers (use the lecture's own numbers where it has them). Add a short "Watch out:" line when students typically slip (sign errors, which intercept moves, mixing up axes).>
+  Do not just restate the bullets above it.
 - Cite sources inline: page numbers like (p. 4) for PDFs, timestamps like (12:34) for the lecture video.
 - Use [[wikilinks]] for key concepts (e.g. [[Budget constraint]], [[Opportunity cost]]).
-- For every graph/diagram in the source, put a placeholder line {{figure:<id>}} where it belongs and add a matching entry to "figures" with a clean SVG redraw (viewBox, labeled axes, curves, labels; no scripts) and a text description.
-- End with '## Key terms' — a bullet list of terms with one-line definitions.
-Be accurate. Do not invent content that isn't supported by the sources.`;
+- The typed notes arrive as text with equations already converted to LaTeX, plus the pictures pasted in them labelled "image N" (those are the professor's graphs). Read the pictures and the scanned handwriting; they hold the graphs and the worked examples.
+- For every graph/diagram, put a placeholder line {{figure:<id>}} where it belongs and add a matching "figures" entry with an SVG redraw and a text description. SVG rules, follow them exactly:
+  * ONE graph per figure (never several panels in one SVG). To show a change, overlay before (gray, dashed) and after (blue, solid) on the same axes and label each.
+  * <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 380" font-family="sans-serif" font-size="14">. Plot area: x from 70 to 470, y from 30 to 320 (origin at 70,320). Compute every coordinate from a linear scale you pick for that graph (e.g. pixels = 70 + x*k); do not eyeball. Lines that must be parallel get identical slopes; a line that pivots about an intercept keeps that intercept at exactly the same pixel point.
+  * Axes with arrowheads and axis names (e.g. x₁, x₂, F, G). Put the axis name just past each arrow tip, inside the viewBox (text-anchor="end" if needed). Mark every intercept or key point the notes give with its value on the axis (e.g. 20, 100) and a small dot.
+  * Text labels must not overlap lines, dots or each other, and must stay fully inside the viewBox: put them in empty space beside the thing they name, give them a white halo (stroke="#fff" stroke-width="4" paint-order="stroke"), and use text-anchor="end" near the right edge.
+  * Shaded regions (e.g. the budget set: everything on or below the budget line, down to the axes) use <polygon> whose vertices you list explicitly, with a light fill and fill-opacity 0.25; check it covers the intended side of the line. No scripts, no external references.
+  * The graph must match the numbers in the note exactly (check intercepts, slopes, direction of every shift).
+- In JSON strings, write every LaTeX backslash doubled (\\\\frac, \\\\beta, \\\\times) so it survives parsing.
+- End with '## Key terms': a bullet list of terms with one-line definitions.
+Be accurate and complete: carry over every definition, formula, worked example and exercise from the sources. Do not invent content the sources don't support, and if something is truly illegible say so once rather than guessing. Don't write meta-commentary about the source files.`;
+
+/** Strip control characters and repair LaTeX commands whose backslash was eaten as a JSON escape (\f, \b, \t, \r). */
+export function cleanMarkdown(md: string) {
+  return md
+    .replace(/\f/g, "\\f").replace(/\x08/g, "\\b").replace(/\t(?=[a-zA-Z])/g, "\\t").replace(/\r(?=[a-zA-Z])/g, "\\r")
+    .replace(/[\x00-\x08\x0b\x0e-\x1f]/g, "");
+}
 
 function validSvg(svg: string) {
   const s = svg.trim();
@@ -242,12 +259,12 @@ Typed notes (if present) are the most accurate text; the scanned handwritten PDF
 
   const assets = path.join(VAULT_DIR, course, "assets");
   fs.mkdirSync(assets, { recursive: true });
-  let md = r.markdown;
+  let md = cleanMarkdown(r.markdown);
   for (const f of r.figures) {
     const file = `${slug}-${slugify(f.id)}.svg`;
     const svg = f.svg.includes("xmlns=") ? f.svg : f.svg.replace(/<svg/i, '<svg xmlns="http://www.w3.org/2000/svg"');
     const embed = validSvg(svg)
-      ? (fs.writeFileSync(path.join(assets, file), svg.trim()), `![[assets/${file}]]\n*${f.description}*`)
+      ? (fs.writeFileSync(path.join(assets, file), svg.trim()), `![[assets/${file}|560]]\n*${f.description}*`)
       : `> [!graph]\n> ${f.description.replace(/\n/g, "\n> ")}`;
     md = md.split(`{{figure:${f.id}}}`).join(embed);
   }
@@ -255,7 +272,7 @@ Typed notes (if present) are the most accurate text; the scanned handwritten PDF
   const fm = [
     "---", `course: ${course}`, `lecture: ${JSON.stringify(topic || r.title)}`,
     `source:`, ...group.map((g) => `  - ${JSON.stringify(g.rel)}`),
-    `tags: [${["notething", course, ...r.tags.map(slugify)].join(", ")}]`, `created: ${isoDate(new Date())}`, "---", "",
+    `tags: [${[...new Set(["notething", course, ...r.tags.map(slugify)])].join(", ")}]`, `created: ${isoDate(new Date())}`, "---", "",
   ].join("\n");
   const full = fm + md.trim() + "\n";
   fs.mkdirSync(path.join(VAULT_DIR, course), { recursive: true });
@@ -315,4 +332,4 @@ export async function ingest(only?: string) {
     }
   }
 }
-export const _test = { tokensOf, kindFromName, topicOf, groupLectures, setOf, sameLecture };
+export const _test = { cleanMarkdown, tokensOf, kindFromName, topicOf, groupLectures, setOf, sameLecture };
