@@ -1,10 +1,10 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import mammoth from "mammoth";
 import { z } from "zod";
 import { ensureCourse, q } from "./db.js";
 import { CHEAP_MODEL, CONTENT_DIR, isoDate, opt, slugify, VAULT_DIR } from "./env.js";
+import { readDocx } from "./docx.js";
 import { askJSON, fileBlock, isImage, type Block } from "./llm.js";
 import { isVideo, transcribe, transcriptText } from "./transcribe.js";
 
@@ -62,7 +62,7 @@ function kindFromName(file: string): Kind | undefined {
 async function kindFromModel(file: string): Promise<Kind> {
   try {
     const r = await askJSON(z.object({ kind: z.enum(["notes", "slides", "syllabus", "problemset", "student_work"]) }), [
-      await contentBlock(file),
+      ...(await contentBlocks(file)),
       { type: "text", text: `Classify this course file "${path.basename(file)}": syllabus (course outline/test dates), notes (professor's lecture notes, handwritten or typed), slides (lecture slide deck), problemset (assignment questions or official solutions), student_work (a student's own submitted answers).` },
     ], { model: CHEAP_MODEL, maxTokens: 256 });
     return r.kind;
@@ -72,12 +72,19 @@ async function kindFromModel(file: string): Promise<Kind> {
   }
 }
 
-async function contentBlock(file: string): Promise<Block> {
+/** A file as model input. .docx becomes text (with equations as LaTeX) plus its pictures, labelled "image N". */
+async function contentBlocks(file: string): Promise<Block[]> {
   if (/\.docx$/i.test(file)) {
-    const { value } = await mammoth.extractRawText({ path: file });
-    return { type: "text", text: `<typed_notes file="${path.basename(file)}">\n${value}\n</typed_notes>` };
+    const { text, images } = await readDocx(file);
+    return [
+      { type: "text", text: `<typed_notes file="${path.basename(file)}">\n${text}\n</typed_notes>` },
+      ...images.flatMap((im): Block[] => [
+        { type: "text", text: `[${im.name} from ${path.basename(file)}, as marked in the text above]` },
+        { type: "image_url", image_url: { url: `data:${im.mime};base64,${im.data.toString("base64")}` } },
+      ]),
+    ];
   }
-  return fileBlock(file);
+  return [fileBlock(file)];
 }
 
 async function discover(course: string): Promise<{ srcs: Src[]; urls: { url: string; topic: string }[] }> {
@@ -117,7 +124,7 @@ const SyllabusSchema = z.object({
 
 async function ingestSyllabus(course: string, s: Src) {
   console.log(`  ▸ syllabus: ${s.rel}`);
-  const r = await askJSON(SyllabusSchema, [await contentBlock(s.abs), {
+  const r = await askJSON(SyllabusSchema, [...(await contentBlocks(s.abs)), {
     type: "text",
     text: `Today is ${isoDate(new Date())}. Extract every test, midterm, quiz and exam from this syllabus with its date (infer the year from context) and the topics it covers. If topics aren't listed per test, infer them from the course schedule (cumulative finals cover everything).`,
   }], { maxTokens: 8000 });
@@ -146,7 +153,7 @@ const ProblemsSchema = z.object({
 
 async function ingestProblemSet(course: string, set: string, files: Src[]) {
   console.log(`  ▸ problem set ${set}: ${files.map((f) => f.rel).join(", ")}`);
-  const r = await askJSON(ProblemsSchema, [...(await Promise.all(files.map((f) => contentBlock(f.abs)))), {
+  const r = await askJSON(ProblemsSchema, [...(await Promise.all(files.map((f) => contentBlocks(f.abs)))).flat(), {
     type: "text",
     text: "These are a problem set and (possibly) its official solutions. Extract each problem/sub-part with the concept it tests, the full question, and the official solution (null if not provided). Use LaTeX $...$ for math.",
   }]);
@@ -166,7 +173,7 @@ async function ingestStudentWork(course: string, s: Src) {
   const set = setOf(s.abs);
   console.log(`  ▸ student work (${set}): ${s.rel}`);
   const probs = await q(`select number, topic, question, solution from problems where course = $1 and set_name = $2 order by number`, [course, set]);
-  const r = await askJSON(StudentSchema, [await contentBlock(s.abs), {
+  const r = await askJSON(StudentSchema, [...(await contentBlocks(s.abs)), {
     type: "text",
     text: `This is the student's own submitted ${set}. Compare each answer to the official solutions below and mark it correct or not. Be fair: partially correct with the key idea = correct.\n\n${JSON.stringify(probs)}`,
   }], { maxTokens: 8000 });
@@ -223,7 +230,7 @@ async function buildLecture(course: string, topic: string, group: Src[]) {
     if (g.kind === "video") {
       const t = transcribe(courseDir, g.abs);
       if (t) blocks.push({ type: "text", text: `<lecture_video_transcript source="${g.rel}"${t.title ? ` title="${t.title}"` : ""} duration_s="${t.duration}">\n${transcriptText(t)}\n</lecture_video_transcript>` });
-    } else blocks.push(await contentBlock(g.abs));
+    } else blocks.push(...(await contentBlocks(g.abs)));
   }
   if (!blocks.length) { console.warn("    ! no usable sources, skipping"); return; }
   blocks.push({
