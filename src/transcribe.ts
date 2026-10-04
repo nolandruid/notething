@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { opt, ROOT } from "./env.js";
+import { errLabel } from "./redact.js";
 
 export const VIDEO_EXT = new Set([".mp4", ".mov", ".mkv", ".webm", ".m4a", ".mp3", ".wav"]);
 export const isVideo = (f: string) => VIDEO_EXT.has(path.extname(f).toLowerCase());
@@ -48,7 +49,7 @@ export function transcribe(courseDir: string, source: string): Transcript | unde
   const host = opt("TRANSCRIBE_SSH_HOST");
   const model = opt("WHISPER_MODEL", "small");
   const isUrl = source.startsWith("http");
-  console.log(`  ⇣ Transcribing ${isUrl ? source : path.basename(source)} ${host ? `on ${host}` : "locally"} (whisper ${model})…`);
+  console.log(`  ⇣ Transcribing a ${isUrl ? "video" : "file"} ${host ? "on your remote host" : "locally"} (whisper ${model})…`);
   try {
     if (host) remoteTranscribe(host, source, out, model);
     else {
@@ -56,7 +57,7 @@ export function transcribe(courseDir: string, source: string): Transcript | unde
       execFileSync("uv", args, { stdio: "inherit", env: { ...process.env, WHISPER_MODEL: model } });
     }
   } catch (e) {
-    console.warn(`  ! Transcription failed for ${source}: ${(e as Error).message}\n    (local mode needs uv: https://docs.astral.sh/uv/ — or set TRANSCRIBE_SSH_HOST)`);
+    console.warn(`  ! Transcription failed (${errLabel(e)})\n    (local mode needs uv: https://docs.astral.sh/uv/ — or set TRANSCRIBE_SSH_HOST)`);
     return undefined;
   }
   const t: Transcript = JSON.parse(fs.readFileSync(out, "utf8"));

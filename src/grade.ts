@@ -5,6 +5,7 @@ import { q } from "./db.js";
 import { CHEAP_MODEL, CONTENT_DIR, opt } from "./env.js";
 import { askJSON, fileBlock, type Block } from "./llm.js";
 import { COACH, esc, noteLink, pushRetries, type Retry } from "./mail.js";
+import { UserError } from "./redact.js";
 
 // ---------- which problem set is this? ----------
 
@@ -63,9 +64,10 @@ export async function identifyProblemSet(files: string[], subject = "", body = "
 
 const Part = z.object({
   number: z.string().describe("problem/part label exactly as written in <problems>, e.g. '5(c)'"),
-  status: z.enum(["correct", "partial", "incorrect", "not_attempted"]),
+  status: z.enum(["correct", "partial", "incorrect", "not_attempted", "needs_review"]).describe("needs_review: you could not read the student's answer or a graph feature clearly enough to judge it. Use it instead of guessing; it is NOT a mistake and is not scored"),
   points_possible: z.number().nullable().describe("points for this part if the problem set or solutions state them, else null"),
   points_earned: z.number().nullable().describe("points earned (partial credit allowed) when points_possible is given, else null"),
+  unclear: z.string().describe("only when status is needs_review: exactly what you could not read, e.g. 'the vertical-axis label could be 6 or 8'; else empty"),
   what_was_right: z.string().describe("what the student got right, one sentence; empty if nothing"),
   mistake: z.string().describe("the specific error: the student's value/step versus the correct one; empty if fully correct"),
   fix: z.string().describe("how to fix it or what to do next time, concrete, one or two sentences; empty if fully correct"),
@@ -93,7 +95,7 @@ export interface GradedPart extends z.infer<typeof Part> { topic: string; questi
 export interface Report {
   course: string; set: string; official: boolean; found: boolean;
   parts: GradedPart[]; summary: string; topFixes: Graded["top_fixes"]; review: { slug: string; title: string; section: string | null; why: string }[];
-  score: { earned: number; possible: number; mode: "points" | "parts"; pct: number };
+  score: { earned: number; possible: number; mode: "points" | "parts"; pct: number; pending: number };
   skipped: string[];
 }
 
@@ -105,7 +107,8 @@ Rules:
 - If <problems> have official solutions, they are the authority; the official problem set / solutions PDFs are attached too (they hold the graphs and any point values). Accept equivalent forms (unsimplified vs simplified, different but correct reasoning).
 - If there are NO official solutions, first solve each part carefully yourself, then compare. Say so in the summary: this is an unofficial grade.
 - Points: use the points printed on the problem set or solutions. If no points are printed, set points_possible and points_earned to null for every part and judge by status: correct, partial (right idea, wrong execution or incomplete), incorrect.
-- Read handwriting carefully; if something is illegible, say so in the mistake rather than guessing wrong.
+- Read handwriting carefully. An uncertain reading is not evidence of a student mistake: if a digit, sign, symbol, axis label, intercept or line is ambiguous or illegible and it changes the grade, set status "needs_review" and say in "unclear" exactly what you could not read. Never mark such a part incorrect or partial. Parts that are plainly blank are "not_attempted".
+- The summary, top_fixes and review must be based only on parts you could read; never present a needs_review part as a weakness.
 - For graphs: check where each line crosses the axes (intercepts, with the numbers), the slope or relative steepness, axis labels and units, and whether a shift (parallel) or pivot (one intercept fixed) went the right direction. Put your findings in graph_check.
 - "mistake" is specific: what the student wrote versus the right value. "fix" is concrete and short.
 - Email-safe text: no LaTeX, no $ signs, no backslashes. Write math in plain Unicode, e.g. p₁x₁ + p₂x₂ = m, x₂ = m/p₂ − (p₁/p₂)x₁, ∂f/∂x, √x, ≤, ×, ½. Currency as $4.
@@ -114,15 +117,17 @@ Rules:
 /** "5(c)" and "5c" and "5 (C)" are the same part. */
 const key = norm;
 
-function score(parts: GradedPart[]): Report["score"] {
+function score(all: GradedPart[]): Report["score"] {
+  const parts = all.filter((p) => p.status !== "needs_review"); // an unreadable part is pending, not wrong
+  const pending = all.length - parts.length;
   const allPoints = parts.length > 0 && parts.every((p) => p.points_possible != null);
   if (allPoints) {
     const possible = parts.reduce((a, p) => a + (p.points_possible ?? 0), 0);
     const earned = parts.reduce((a, p) => a + Math.min(Math.max(p.points_earned ?? 0, 0), p.points_possible ?? 0), 0);
-    return { earned, possible, mode: "points", pct: possible ? Math.round((100 * earned) / possible) : 0 };
+    return { earned, possible, mode: "points", pct: possible ? Math.round((100 * earned) / possible) : 0, pending };
   }
   const earned = parts.reduce((a, p) => a + (p.status === "correct" ? 1 : p.status === "partial" ? 0.5 : 0), 0);
-  return { earned, possible: parts.length, mode: "parts", pct: parts.length ? Math.round((100 * earned) / parts.length) : 0 };
+  return { earned, possible: parts.length, mode: "parts", pct: parts.length ? Math.round((100 * earned) / parts.length) : 0, pending };
 }
 
 /** The original problem set / solutions PDFs for a set, so the grader can read points and drawn solution graphs. */
@@ -138,7 +143,7 @@ async function officialFiles(course: string, set: string): Promise<string[]> {
 /** Grade the student's files (PDFs / photos) against one problem set. */
 export async function gradeProblemSet(target: Target, files: string[], note = "", skipped: string[] = []): Promise<Report> {
   const problems = await q<Problem>(`select number, topic, question, solution from problems where course = $1 and set_name = $2 order by id`, [target.course, target.set]);
-  if (!problems.length) throw new Error(`No ${target.set} problems for ${target.course}; run pnpm ingest first.`);
+  if (!problems.length) throw new UserError("No problems are ingested for that problem set; run pnpm ingest first.");
   const notes = await q<{ slug: string; title: string; markdown: string }>(`select slug, title, markdown from notes where course = $1 order by slug`, [target.course]);
   const given = await officialFiles(target.course, target.set);
   // Official solutions exist if every part has one on record, or a solutions PDF is attached to cover parts ingestion left blank.
@@ -160,7 +165,7 @@ export async function gradeProblemSet(target: Target, files: string[], note = ""
   const parts: GradedPart[] = problems.map((p) => {
     const r = byKey.get(key(p.number));
     return {
-      ...(r ?? { number: p.number, status: "not_attempted" as const, points_possible: null, points_earned: null, what_was_right: "", mistake: "I couldn't find an answer to this part.", fix: "", graph_check: null, note_slug: null }),
+      ...(r ?? { number: p.number, status: "needs_review" as const, points_possible: null, points_earned: null, unclear: "I couldn't find this part in the pages I read.", what_was_right: "", mistake: "", fix: "", graph_check: null, note_slug: null }),
       number: p.number, topic: p.topic, question: p.question, solution: p.solution,
       note_slug: r?.note_slug && slugs.has(r.note_slug) ? r.note_slug : null,
     };
@@ -190,7 +195,7 @@ export function unlatex(s: string): string {
   return t.replace(/[{}]/g, "").replace(/ {2,}/g, " ").trim();
 }
 
-const ICON = { correct: "✅", partial: "🟡", incorrect: "❌", not_attempted: "⬜" } as const;
+const ICON = { correct: "✅", partial: "🟡", incorrect: "❌", not_attempted: "⬜", needs_review: "❔" } as const;
 const pts = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(1));
 const partLabel = (p: GradedPart) => p.number.replace(/^\d+/, "").replace(/[()]/g, "");
 
@@ -199,29 +204,32 @@ function byQuestion(parts: GradedPart[], mode: "points" | "parts"): Q[] {
   const m = new Map<string, GradedPart[]>();
   for (const p of parts) m.set(questionOf(p.number), [...(m.get(questionOf(p.number)) ?? []), p]);
   return [...m].map(([n, ps]) => {
-    const s = score(ps);
-    return { n, parts: ps, earned: mode === "points" ? s.earned : ps.reduce((a, p) => a + (p.status === "correct" ? 1 : p.status === "partial" ? 0.5 : 0), 0), possible: mode === "points" ? s.possible : ps.length };
+    const s = score(ps), read = ps.filter((p) => p.status !== "needs_review");
+    return { n, parts: ps, earned: mode === "points" ? s.earned : read.reduce((a, p) => a + (p.status === "correct" ? 1 : p.status === "partial" ? 0.5 : 0), 0), possible: mode === "points" ? s.possible : read.length };
   });
 }
 
 /** Which graded parts need a closer look, worst first. */
 export const missedParts = (parts: GradedPart[]) =>
-  parts.filter((p) => p.status !== "correct").sort((a, b) => Number(a.status === "partial") - Number(b.status === "partial"));
+  parts.filter((p) => p.status !== "correct" && p.status !== "needs_review").sort((a, b) => Number(a.status === "partial") - Number(b.status === "partial"));
 
 export function renderReport(r: Report): { text: string; html: string } {
   const first = opt("STUDENT_NAME").split(/\s+/)[0];
   const sc = r.score;
-  const scoreStr = `${pts(sc.earned)}/${pts(sc.possible)}${sc.mode === "points" ? " points" : " parts"} (${sc.pct}%)`;
+  const scoreStr = sc.possible === 0 ? "Not scored yet"
+    : `${pts(sc.earned)}/${pts(sc.possible)}${sc.mode === "points" ? " points" : " parts"} (${sc.pct}%)${sc.pending ? ` on the parts I could read` : ""}`;
   const caveat = r.official ? "" : "Heads up: I don't have official solutions for this set, so I solved it myself first. Treat this grade as unofficial.";
   const qs = byQuestion(r.parts, sc.mode);
-  const bad = r.parts.filter((p) => p.status !== "correct"); // in problem-set order
+  const bad = r.parts.filter((p) => p.status !== "correct" && p.status !== "needs_review"); // in problem-set order
+  const unsure = r.parts.filter((p) => p.status === "needs_review");
+  const askLine = (p: GradedPart) => `Q${p.number} ${p.topic}: I couldn't read this clearly${p.unclear ? ` (${f(p.unclear)})` : ""}. Can you retype it, or send a close-up photo? It hasn't affected your score or practice plan.`;
   const f = (s: string) => unlatex(s);
   const skipped = r.skipped.length ? `I couldn't read ${r.skipped.join(", ")}; resend ${r.skipped.length === 1 ? "it" : "them"} as a PDF or JPG if you want ${r.skipped.length === 1 ? "it" : "them"} graded too.` : "";
 
   const qLine = (x: Q) => {
     const icons = x.parts.length > 1 ? x.parts.map((p) => `${partLabel(p)} ${ICON[p.status]}`).join("  ") : ICON[x.parts[0].status];
     const topics = [...new Set(x.parts.map((p) => p.topic))];
-    return { n: x.n, topic: topics.slice(0, 2).join(" / ") + (topics.length > 2 ? " …" : ""), score: `${pts(x.earned)}/${pts(x.possible)}`, icons };
+    return { n: x.n, topic: topics.slice(0, 2).join(" / ") + (topics.length > 2 ? " …" : ""), score: x.possible ? `${pts(x.earned)}/${pts(x.possible)}` : "—", icons };
   };
   const rows = qs.map(qLine);
 
@@ -236,7 +244,8 @@ export function renderReport(r: Report): { text: string; html: string } {
     `${first ? `Hi ${first}, ` : ""}I graded your ${r.set} (${r.course}).`, ...(caveat ? ["", caveat] : []), ...(skipped ? ["", skipped] : []), "",
     `OVERALL: ${scoreStr}`, f(r.summary), "",
     "BY QUESTION", ...rows.map((x) => `Q${x.n}  ${x.score.padEnd(5)} ${x.icons}   ${x.topic}`), "",
-    ...(bad.length ? ["WHAT TO FIX", ...bad.flatMap((p) => [`Q${p.number} ${ICON[p.status]} ${p.topic}${p.points_possible != null ? ` (${pts(p.points_earned ?? 0)}/${pts(p.points_possible)})` : ""}`, ...detail(p).map((l) => `   ${l}`), ""])] : ["Nothing to fix. That is a clean set.", ""]),
+    ...(bad.length ? ["WHAT TO FIX", ...bad.flatMap((p) => [`Q${p.number} ${ICON[p.status]} ${p.topic}${p.points_possible != null ? ` (${pts(p.points_earned ?? 0)}/${pts(p.points_possible)})` : ""}`, ...detail(p).map((l) => `   ${l}`), ""])] : [unsure.length ? "Nothing to fix in the parts I could read." : "Nothing to fix. That is a clean set.", ""]),
+    ...(unsure.length ? ["PLEASE CONFIRM", ...unsure.map((p) => `• ${askLine(p)}`), ""] : []),
     ...(r.topFixes.length ? ["TOP THINGS TO WORK ON", ...r.topFixes.map((t, i) => `${i + 1}. ${f(t.title)}: ${f(t.detail)}`), ""] : []),
     ...(r.review.length ? ["REVIEW", ...r.review.map((n) => `• ${n.title}${n.section ? ` › ${n.section}` : ""} (${f(n.why)})${noteLink(r.course, n.slug) ? `: ${noteLink(r.course, n.slug)}` : ""}`), ""] : []),
     bad.length ? "I've added the parts you missed to your upcoming sessions so we lock them in." : "Next session will push a bit further.", "", "— NoteThing",
@@ -250,7 +259,8 @@ ${caveat ? `<p style="background:#fff8e1;border-radius:8px;padding:8px 12px;font
 <h3 style="margin-bottom:4px">By question</h3>
 <table style="border-collapse:collapse;width:100%;font-size:14px"><tr style="text-align:left;color:#888"><th style="${td}">Q</th><th style="${td}">Topic</th><th style="${td}">Score</th><th style="${td}">Parts</th></tr>
 ${rows.map((x) => `<tr><td style="${td}"><b>${esc(x.n)}</b></td><td style="${td}">${esc(x.topic)}</td><td style="${td};white-space:nowrap">${esc(x.score)}</td><td style="${td};white-space:nowrap">${esc(x.icons)}</td></tr>`).join("\n")}</table>
-${bad.length ? `<h3 style="margin-bottom:4px">What to fix</h3>${bad.map((p) => `<p style="margin:8px 0">${ICON[p.status]} <b>Q${esc(p.number)}</b> · ${esc(p.topic)}${p.points_possible != null ? ` (${pts(p.points_earned ?? 0)}/${pts(p.points_possible)})` : ""}<br><span style="color:#444">${detail(p).map(esc).join("<br>")}</span></p>`).join("")}` : "<p>Nothing to fix. That is a clean set.</p>"}
+${bad.length ? `<h3 style="margin-bottom:4px">What to fix</h3>${bad.map((p) => `<p style="margin:8px 0">${ICON[p.status]} <b>Q${esc(p.number)}</b> · ${esc(p.topic)}${p.points_possible != null ? ` (${pts(p.points_earned ?? 0)}/${pts(p.points_possible)})` : ""}<br><span style="color:#444">${detail(p).map(esc).join("<br>")}</span></p>`).join("")}` : `<p>${unsure.length ? "Nothing to fix in the parts I could read." : "Nothing to fix. That is a clean set."}</p>`}
+${unsure.length ? `<h3 style="margin-bottom:4px">Please confirm</h3><ul>${unsure.map((p) => `<li style="margin-bottom:6px">${esc(askLine(p))}</li>`).join("")}</ul>` : ""}
 ${r.topFixes.length ? `<h3 style="margin-bottom:4px">Top things to work on</h3><ol>${r.topFixes.map((t) => `<li style="margin-bottom:6px"><b>${esc(f(t.title))}</b>: ${esc(f(t.detail))}</li>`).join("")}</ol>` : ""}
 ${r.review.length ? `<h3 style="margin-bottom:4px">Review</h3><ul>${r.review.map((n) => { const href = noteLink(r.course, n.slug), label = `<b>${esc(n.title)}</b>${n.section ? ` › ${esc(n.section)}` : ""}`; return `<li>${href ? `<a href="${esc(href)}">${label}</a>` : label} <span style="color:#555">(${esc(f(n.why))})</span></li>`; }).join("")}</ul>` : ""}
 <p>${bad.length ? "I've added the parts you missed to your upcoming sessions so we lock them in." : "Next session will push a bit further."}</p><p style="color:#888">— NoteThing</p></div>`;
@@ -261,13 +271,15 @@ ${r.review.length ? `<h3 style="margin-bottom:4px">Review</h3><ul>${r.review.map
 
 /** Record each part as a result per topic, and queue what was missed into the next session so it gets re-practised. Idempotent per source. */
 export async function recordWeakTopics(r: Report, source: string, maxRetries = 4) {
+  // An unreadable part says nothing about what the student knows, so it never enters the history.
+  const read = r.parts.filter((p) => p.status !== "needs_review");
   // One statement, so a failure can never leave the source with only some of its rows.
   await q(
     `with cleared as (delete from seed_results where course = $1 and source = $2)
      insert into seed_results (course, topic, correct, source, note)
      select $1, t.topic, t.correct, $2, t.note from unnest($3::text[], $4::boolean[], $5::text[]) as t(topic, correct, note)`,
-    [r.course, source, r.parts.map((p) => p.topic), r.parts.map((p) => p.status === "correct"),
-      r.parts.map((p) => `${r.set} Q${p.number}: ${(p.mistake || p.what_was_right || p.status).slice(0, 200)}`)]);
+    [r.course, source, read.map((p) => p.topic), read.map((p) => p.status === "correct"),
+      read.map((p) => `${r.set} Q${p.number}: ${(p.mistake || p.what_was_right || p.status).slice(0, 200)}`)]);
   const test = (await q<{ name: string }>(`select name from tests where course = $1 and (date is null or date >= current_date) order by date nulls last limit 1`, [r.course]))[0];
   const missed: Retry[] = missedParts(r.parts).slice(0, maxRetries).map((p) => ({
     question: `(${r.set} ${p.number}) ${p.question}`, answer: p.solution ?? p.fix, topic: p.topic, note_slug: p.note_slug,
