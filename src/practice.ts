@@ -1,6 +1,7 @@
 import path from "node:path";
 import { z } from "zod";
 import { courses, q } from "./db.js";
+import { errLabel, UserError } from "./redact.js";
 import { need, opt } from "./env.js";
 import { askJSON, fileBlock } from "./llm.js";
 import { ensureInbox, esc, mail } from "./mail.js";
@@ -52,7 +53,7 @@ const Extract = z.object({
 
 async function extractQuestions(course: string, set: string, misses: Miss[]): Promise<z.infer<typeof Extract>["parts"]> {
   const pdf = (await officialFiles(course, set)).find((f) => !/solution|soln|answer/i.test(path.basename(f)));
-  if (!pdf) throw new Error(`No ${set} problem set PDF on file for ${course}; run pnpm ingest first.`);
+  if (!pdf) throw new UserError("No problem set PDF is on file for that set; run pnpm ingest first.");
   const want = misses.map((m) => ({ number: m.number, what_went_wrong_last_time: unlatex(m.note) }));
   const r = await askJSON(Extract, [
     { type: "text", text: "The attached PDF is a problem set. Copy out the exact question text for the parts listed below." },
@@ -81,7 +82,7 @@ export async function buildItems(course: string, set: string, misses: Miss[]): P
     const m = misses.find((x) => partKey(x.number) === partKey(s.number));
     if (!m) continue;
     const g = got.get(partKey(s.number));
-    if (!g?.question.trim()) console.warn(`   ⚠ ${set} ${s.number} not found in the PDF extraction; using the ingested text`);
+    if (!g?.question.trim()) console.warn("   ⚠ a part was not found in the PDF extraction; using the ingested text for it");
     items.push({ number: s.number, setup: g?.setup.trim() ?? "", question: g?.question.trim() || s.question, hint: g?.hint.trim() || unlatex(m.note) });
   }
   return items;
@@ -148,18 +149,18 @@ export async function practice(args: string[]) {
       misses = forced.map((n) => misses.find((m) => m.set === base && partKey(m.number) === partKey(n)) ?? { set: base, number: n, note: "you asked to redo this one" });
     } else if (set) misses = misses.filter((m) => m.set === set);
     const target = forced.length ? misses[0].set : set;
-    if (!target || !misses.length) { console.log(`${c}: nothing missed, nothing to practice.`); continue; }
+    if (!target || !misses.length) { console.log("Nothing missed, nothing to practice."); continue; }
 
-    console.error(`→ ${c} ${target}: ${misses.length} part(s) to redo (${misses.map((m) => m.number).join(", ")})`);
+    console.error(`→ ${misses.length} part(s) to redo`);
     const items = await buildItems(c, target, misses);
-    if (!items.length) { console.log(`${c} ${target}: none of the requested parts exist in this set.`); continue; }
+    if (!items.length) { console.log("None of the requested parts exist in that set."); continue; }
     const { subject, text, html } = renderPractice(target, items);
     if (dry) { console.log(`Subject: ${subject}\n\n${text}`); continue; }
 
     const inbox = await ensureInbox();
     const to = need("STUDENT_EMAIL", "The address practice emails are sent to.");
     const res = await mail().inboxes.messages.send(inbox.id, { to: [to], subject, text, html, labels: ["notething", "practice"] });
-    console.log(`✉️  Sent "${subject}" → ${to} (${items.length} questions)`);
+    console.log(`✉️  Sent "${subject}" (${items.length} questions)`);
     // The email is out; keep trying to record it so the reply can be graded against exactly these parts.
     await ensurePracticeTable();
     const parts: PracticePart[] = items.map((i) => ({ number: i.number, hint: i.hint }));
@@ -168,7 +169,7 @@ export async function practice(args: string[]) {
         await q(`insert into practice_sets (course, set_name, thread_id, message_id, parts) values ($1,$2,$3,$4,$5::jsonb)`, [c, target, res.threadId, res.messageId, JSON.stringify(parts)]);
         break;
       } catch (e) {
-        if (attempt >= 3) throw new Error(`Practice email sent (thread ${res.threadId}) but saving its part list failed: ${(e as Error).message}`);
+        if (attempt >= 3) throw new UserError(`Practice email sent, but saving its part list failed (${errLabel(e)}); replies will not be limited to those parts.`);
         await new Promise((r) => setTimeout(r, 1000 * attempt));
       }
     }

@@ -8,6 +8,7 @@ import { gradeProblemSet, identifyProblemSet, recordWeakTopics, renderReport } f
 import { isImage } from "./llm.js";
 import { practicePartsFor } from "./practice.js";
 import { ensureInbox, esc, hasGradeable, isGradeable, mail, para, senderAddress } from "./mail.js";
+import { errLabel, UserError } from "./redact.js";
 
 /** Only look at recent mail so an old backlog is never graded by surprise. */
 const LOOKBACK_DAYS = 7;
@@ -22,7 +23,7 @@ async function download(inboxId: string, messageId: string, atts: Att[], dir: st
     const name = (a.filename ?? `attachment-${i + 1}`).replace(/[^\w.() -]/g, "_");
     const res = await mail().inboxes.messages.getAttachment(inboxId, messageId, a.attachmentId);
     const r = await fetch(res.downloadUrl);
-    if (!r.ok) throw new Error(`Couldn't download ${name} (HTTP ${r.status})`);
+    if (!r.ok) throw new UserError(`Couldn't download an attachment (HTTP ${r.status})`);
     let file = path.join(dir, `${i + 1}-${name}`);
     fs.writeFileSync(file, Buffer.from(await r.arrayBuffer()));
     if (/\.hei[cf]$/i.test(file) || /hei[cf]/i.test(a.contentType ?? "")) {
@@ -55,7 +56,7 @@ export async function pollInbox() {
     if (!(await claimMessage(m.messageId))) continue; // already graded, or another poll has it
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "notething-"));
     try {
-      console.log(`📎 Problem set from ${m.from}: "${m.subject ?? "(no subject)"}"`);
+      console.log("📎 Problem set received");
       const full = await mail().inboxes.messages.get(inbox.id, m.messageId);
       const note = full.extractedText ?? full.text ?? m.preview ?? "";
       const { files, skipped } = await download(inbox.id, m.messageId, full.attachments ?? m.attachments ?? [], dir);
@@ -72,7 +73,7 @@ export async function pollInbox() {
       }
       // A reply to a practice email is graded on just the parts that email asked for.
       const only = await practicePartsFor(target, m.threadId, m.subject ?? "");
-      console.log(`   → ${target.course} ${target.set}${only ? ` practice redo (${only.length} parts)` : ""}; grading ${files.length} file(s)…`);
+      console.log(`   → ${only ? `practice redo (${only.length} parts), ` : ""}grading ${files.length} file(s)…`);
       const report = await gradeProblemSet(target, files, note, skipped, only);
       if (!report.found) {
         await replyShort(inbox.id, m.messageId, `I opened your attachment but couldn't find answers to ${target.set} in it. Make sure the pages are in focus and attached, then send it again.`);
@@ -87,15 +88,15 @@ export async function pollInbox() {
       for (let attempt = 1; ; attempt++) {
         try { await finishMessage(m.messageId, "graded", `${target.set} ${report.score.earned}/${report.score.possible}`); break; }
         catch (e) {
-          if (attempt >= 3) { console.error(`   ⚠ report sent but status not recorded: ${(e as Error).message}`); break; }
+          if (attempt >= 3) { console.error(`   ⚠ report sent but status not recorded: ${errLabel(e)}`); break; }
           await new Promise((r) => setTimeout(r, 1000 * attempt));
         }
       }
-      console.log(`   ✓ ${target.set} graded ${report.score.earned}/${report.score.possible} (${report.score.pct}%), report sent`);
+      console.log("   ✓ graded, report sent");
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       const failures = await failMessage(m.messageId, msg);
-      console.error(`   ✗ grading failed (${failures}/${GIVE_UP_AFTER}): ${msg}`);
+      console.error(`   ✗ grading failed (${failures}/${GIVE_UP_AFTER}): ${errLabel(e)}`);
       if (failures >= GIVE_UP_AFTER) {
         try { await replyShort(inbox.id, m.messageId, "I couldn't grade that one, even after a few tries. Try sending it again as a single PDF; if it keeps failing, something is up on my end."); } catch { /* best effort */ }
       }

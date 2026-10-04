@@ -4,6 +4,7 @@ import { claimMessage, ensureProcessedTable, getSetting, isProcessed, now, q, se
 import { isoDate, need, OBSIDIAN_VAULT, opt, parseDay, STUDY_HOUR } from "./env.js";
 import { latexToText as tex } from "./latex.js";
 import { askJSON } from "./llm.js";
+import { UserError } from "./redact.js";
 
 interface Session {
   id: number; course: string; scheduled_for: Date; kind: string; test_name: string | null;
@@ -167,7 +168,7 @@ export async function sendSession(s: Session) {
     to: [to], subject: tex(composed.plan.subject), text, html, labels: ["notething", `session-${s.id}`],
   });
   await q(`update sessions set status = 'sent', sent_message_id = $2, thread_id = $3, sent_at = $4 where id = $1`, [s.id, res.messageId, res.threadId, await now()]);
-  console.log(`✉️  Sent session #${s.id} "${tex(composed.plan.subject)}" → ${to} (${composed.items.length} questions)`);
+  console.log(`✉️  Sent session #${s.id} (${composed.items.length} questions)`);
 }
 
 export async function sendNext(): Promise<boolean> {
@@ -328,7 +329,7 @@ export async function pollReplies() {
     }
     const answer = bodyOf(reply);
     const items = await q<QuizItem>(`select * from quiz_items where session_id = $1 order by is_retry desc, id`, [s.id]);
-    console.log(`📥 Reply on session #${s.id} from ${reply.from}; grading ${items.length} answers…`);
+    console.log(`📥 Reply on session #${s.id}; grading ${items.length} answers…`);
     const g = await askJSON(GradeSchema, [{
       type: "text",
       text: `Grade the student's emailed answers. Questions in the order they were numbered in the email:\n${JSON.stringify(items.map((it, i) => ({ n: i + 1, quiz_item_id: it.id, question: it.question, model_answer: it.answer, topic: it.topic })))}\n\n<student_reply>\n${answer}\n</student_reply>\n\nBe fair: accept equivalent reasoning and notation. Missing answers are incorrect.`,
@@ -338,7 +339,7 @@ export async function pollReplies() {
     // Only trust results that point at a real question in this session, once each.
     const seen = new Set<number>();
     const results = g.results.filter((r) => byId.has(r.quiz_item_id) && !seen.has(r.quiz_item_id) && !!seen.add(r.quiz_item_id));
-    if (!results.length) throw new Error("The grader's results didn't match any question in this session");
+    if (!results.length) throw new UserError("The grader's results didn't match any question in this session");
     if (results.every((r) => !r.response.trim())) {
       // The model found nothing it could call an answer: don't count a blank reply as all wrong.
       console.log(`📥 Reply on session #${s.id} has no answers; asking for them (session stays open)`);
@@ -357,6 +358,6 @@ export async function pollReplies() {
     await mail().inboxes.messages.reply(inbox.id, reply.messageId, { text, html });
     await q(`update sessions set status = 'graded' where id = $1`, [s.id]);
     await bumpWeakTopics(s, missed);
-    console.log(`   ✓ graded ${score}, feedback sent`);
+    console.log("   ✓ graded, feedback sent");
   }
 }

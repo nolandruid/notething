@@ -5,6 +5,7 @@ import { pollInbox } from "./inbox.js";
 import { ensureInbox, fastForward, pollReplies, sendNext } from "./mail.js";
 import { plan } from "./plan.js";
 import { practice } from "./practice.js";
+import { errLabel, UserError } from "./redact.js";
 
 const [cmd, arg, ...rest] = process.argv.slice(2);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -33,7 +34,7 @@ async function main() {
     case "practice": return practice([arg, ...rest].filter((a): a is string => !!a));
     case "fast-forward": {
       const n = Number(arg ?? 1);
-      if (!Number.isInteger(n) || n < 1) throw new Error("usage: fast-forward <n>");
+      if (!Number.isInteger(n) || n < 1) throw new UserError("usage: fast-forward <n>");
       return fastForward(n);
     }
     case "inbox": { const i = await ensureInbox(); return console.log(`📬 ${i.email}`); }
@@ -41,7 +42,7 @@ async function main() {
       console.log("🔁 NoteThing running (Ctrl-C to stop)");
       for (;;) {
         for (const step of [() => ingest(), async () => { while (await sendNext()); }, async () => { await pollInbox(); await pollReplies(); }]) {
-          try { await step(); } catch (e) { console.error(`✗ ${(e as Error).message}`); }
+          try { await step(); } catch (e) { console.error(`✗ ${errLabel(e)}`); }
         }
         await sleep(60_000);
       }
@@ -50,4 +51,4 @@ async function main() {
   }
 }
 
-main().catch((e) => { console.error(`\n✗ ${e instanceof Error ? e.message : e}`); process.exit(1); });
+main().catch((e) => { console.error(`\n✗ ${errLabel(e)}`); process.exit(1); });

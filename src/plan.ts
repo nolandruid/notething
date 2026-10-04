@@ -2,6 +2,7 @@ import { z } from "zod";
 import { courses, now, q } from "./db.js";
 import { isoDate, parseDay, STUDY_HOUR } from "./env.js";
 import { askJSON } from "./llm.js";
+import { errLabel } from "./redact.js";
 
 interface Note { slug: string; title: string; lecture: string | null }
 interface Test { name: string; date: string | null; topics: string[] }
@@ -23,7 +24,7 @@ async function mapTestsToNotes(tests: Test[], notes: Note[]): Promise<Record<str
       const slugs = t.note_slugs.filter((s) => valid.has(s));
       if (slugs.length && t.name in all) all[t.name] = slugs;
     }
-  } catch (e) { console.warn(`  ! topic mapping failed (${(e as Error).message}); using all notes for every test`); }
+  } catch (e) { console.warn(`  ! topic mapping failed (${errLabel(e)}); using all notes for every test`); }
   return all;
 }
 
@@ -98,7 +99,7 @@ export async function plan(only?: string) {
     }
     if (carried.length) await restoreRetries(course, carried, tests[0]?.name ?? null, today);
     const rows = await q<{ scheduled_for: Date; kind: string; topics: string[] }>(`select scheduled_for, kind, topics from sessions where course = $1 and status = 'pending' order by scheduled_for`, [course]);
-    console.log(`\n🗓  ${course}: ${made} sessions planned toward ${tests.map((t) => `${t.name} (${t.date})`).join(", ")}`);
-    for (const r of rows) console.log(`  ${isoDate(new Date(r.scheduled_for))} ${String(STUDY_HOUR).padStart(2, "0")}:00  [${r.kind}] ${r.topics.join(" · ")}`);
+    console.log(`\n🗓  ${made} sessions planned toward ${tests.length} test(s)`);
+    for (const r of rows) console.log(`  ${isoDate(new Date(r.scheduled_for))} ${String(STUDY_HOUR).padStart(2, "0")}:00  [${r.kind}]`);
   }
 }
