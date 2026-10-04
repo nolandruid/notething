@@ -44,12 +44,14 @@ async function api<T>(method: string, route: string, body?: unknown): Promise<T>
 async function waitFor(ops: Operation[] = []) {
   const { project } = config();
   for (const op of ops) {
-    for (let i = 0; i < 60; i++) {
+    let done = false;
+    for (let i = 0; i < 60 && !done; i++) {
       const { operation } = await api<{ operation: Operation }>("GET", `/projects/${project}/operations/${op.id}`);
-      if (operation.status === "finished" || operation.status === "skipped") break;
-      if (["failed", "error", "cancelled"].includes(operation.status)) throw new Error(`Neon operation ${op.id} ${operation.status}`);
-      await new Promise((r) => setTimeout(r, 500));
+      if (operation.status === "finished" || operation.status === "skipped") done = true;
+      else if (["failed", "error", "cancelled"].includes(operation.status)) throw new Error(`Neon operation ${op.id} ${operation.status}`);
+      else await new Promise((r) => setTimeout(r, 500));
     }
+    if (!done) throw new Error(`Timed out waiting for Neon operation ${op.id}; check the branch in the Neon Console and retry.`);
   }
 }
 
@@ -64,6 +66,8 @@ async function deleteBranch(name: string) {
   if (!b) return;
   const { project } = config();
   if (b.default) throw new Error(`Refusing to delete "${name}": it is the project's primary branch.`);
+  // Don't leave .env pointing at a branch that is about to disappear (or that a failed reset leaves deleted).
+  if (name === RUN) setEnvVar("DEMO_DATABASE_URL", undefined);
   const r = await api<{ operations?: Operation[] }>("DELETE", `/projects/${project}/branches/${b.id}`);
   await waitFor(r.operations);
 }
@@ -109,6 +113,7 @@ export async function demoReset() {
     try { uri = (await api<{ uri: string }>("GET", `/projects/${project}/connection_uri?${qs}`)).uri; }
     catch (e) { if (i === 9) throw e; await new Promise((r) => setTimeout(r, 1000)); }
   }
+  if (!uri) throw new Error("Neon returned no connection URI for the demo branch.");
   setEnvVar("DEMO_DATABASE_URL", uri);
   console.log(`✓ Fresh branch "${RUN}" ready; DEMO_DATABASE_URL written to .env. Run pnpm demo:off to go back to main.`);
 }
@@ -121,10 +126,15 @@ export function demoOff() {
 
 /** Replace, add or remove KEY in .env, leaving every other line untouched. The value is quoted and never printed. */
 function setEnvVar(key: string, value: string | undefined) {
-  const lines = fs.existsSync(ENV_FILE) ? fs.readFileSync(ENV_FILE, "utf8").split("\n") : [];
+  // .env may be a symlink (e.g. a git worktree); write to the real file so the link survives.
+  const target = fs.existsSync(ENV_FILE) ? fs.realpathSync(ENV_FILE) : ENV_FILE;
+  const lines = fs.existsSync(target) ? fs.readFileSync(target, "utf8").split("\n") : [];
   const isKey = (l: string) => new RegExp(`^\\s*(export\\s+)?${key}\\s*=`).test(l);
   const rest = lines.filter((l) => !isKey(l));
   while (rest.length && rest[rest.length - 1] === "") rest.pop();
   if (value !== undefined) rest.push(`${key}="${value}"`);
-  fs.writeFileSync(ENV_FILE, rest.join("\n") + "\n");
+  // Private temp file + rename: readers never see a half-written .env, and a new file is not world-readable.
+  const tmp = `${target}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, rest.join("\n") + "\n", { mode: 0o600 });
+  fs.renameSync(tmp, target);
 }

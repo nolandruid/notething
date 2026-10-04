@@ -70,6 +70,8 @@ pnpm demo:reset      # fresh demo-run branch from the baseline; .env points at i
 pnpm demo:off        # back to the main database
 ```
 
+Restart any running `pnpm start` after `demo:reset` or `demo:off` so it picks up the selected database.
+
 ## Privacy
 
 Your course materials never enter this repo: `content/`, `vault/` and `.env` are gitignored. Files go only to OpenRouter (and the model provider it routes to) for processing (and to your own machine or VPS for transcription). The repo contains only code.
