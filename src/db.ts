@@ -54,6 +54,9 @@ const SCHEMA = [
   `create table if not exists seed_results (
      id serial primary key, course text not null, topic text not null, correct boolean not null,
      source text not null, note text)`,
+  `create table if not exists practice_sets (
+     id serial primary key, course text not null, set_name text not null,
+     thread_id text, message_id text, parts jsonb not null, created_at timestamptz default now())`,
   `create table if not exists settings (key text primary key, value text not null)`,
   PROCESSED_DDL,
 ];

@@ -12,6 +12,8 @@ interface Problem { number: string; topic: string; question: string; solution: s
 export interface Target { course: string; set: string }
 
 const norm = (n: string) => n.toLowerCase().replace(/[^a-z0-9]/g, "");
+/** "5(c)" and "5c" and "5 (C)" are the same part. */
+export const partKey = norm;
 const questionOf = (n: string) => n.match(/^\d+/)?.[0] ?? n;
 
 /** "Problem Set 3", "PS3", "ps_3" -> "PS3" (the name `ingest` gives a set). */
@@ -40,7 +42,8 @@ export async function identifyProblemSet(files: string[], subject = "", body = "
   const sets = await knownSets();
   if (!sets.length) return null;
   const hay = [subject, body, ...files.map((f) => path.basename(f))].join("\n");
-  const named = setFromText(hay);
+  // The subject is the strongest signal ("Re: Practice: redo these from Problem Set 1"); the body and file names are fallbacks.
+  const named = setFromText(subject) ?? setFromText(hay);
   if (named) {
     const hits = sets.filter((s) => s.set === named);
     const byCourse = hits.filter((s) => hay.toLowerCase().replace(/[\s_-]/g, "").includes(s.course.toLowerCase()));
@@ -95,6 +98,8 @@ export interface Report {
   parts: GradedPart[]; summary: string; topFixes: Graded["top_fixes"]; review: { slug: string; title: string; section: string | null; why: string }[];
   score: { earned: number; possible: number; mode: "points" | "parts"; pct: number };
   skipped: string[];
+  /** True when only the parts of a practice email were graded (a "redo what you missed" reply). */
+  practice?: boolean;
 }
 
 const GRADER = `${COACH}
@@ -111,8 +116,7 @@ Rules:
 - Email-safe text: no LaTeX, no $ signs, no backslashes. Write math in plain Unicode, e.g. p₁x₁ + p₂x₂ = m, x₂ = m/p₂ − (p₁/p₂)x₁, ∂f/∂x, √x, ≤, ×, ½. Currency as $4.
 - Tone: warm, direct coach. Praise what is real, never inflate.`;
 
-/** "5(c)" and "5c" and "5 (C)" are the same part. */
-const key = norm;
+const key = partKey;
 
 function score(parts: GradedPart[]): Report["score"] {
   const allPoints = parts.length > 0 && parts.every((p) => p.points_possible != null);
@@ -126,7 +130,7 @@ function score(parts: GradedPart[]): Report["score"] {
 }
 
 /** The original problem set / solutions PDFs for a set, so the grader can read points and drawn solution graphs. */
-async function officialFiles(course: string, set: string): Promise<string[]> {
+export async function officialFiles(course: string, set: string): Promise<string[]> {
   const rows = await q<{ path: string }>(`select path from documents where course = $1 and kind = 'problemset'`, [course]);
   const setOf = (f: string) => {
     const n = path.parse(f).name.replace(/20\d\d$/, "");
@@ -136,9 +140,13 @@ async function officialFiles(course: string, set: string): Promise<string[]> {
 }
 
 /** Grade the student's files (PDFs / photos) against one problem set. */
-export async function gradeProblemSet(target: Target, files: string[], note = "", skipped: string[] = []): Promise<Report> {
-  const problems = await q<Problem>(`select number, topic, question, solution from problems where course = $1 and set_name = $2 order by id`, [target.course, target.set]);
-  if (!problems.length) throw new Error(`No ${target.set} problems for ${target.course}; run pnpm ingest first.`);
+export async function gradeProblemSet(target: Target, files: string[], note = "", skipped: string[] = [], only?: string[]): Promise<Report> {
+  const all = await q<Problem>(`select number, topic, question, solution from problems where course = $1 and set_name = $2 order by id`, [target.course, target.set]);
+  if (!all.length) throw new Error(`No ${target.set} problems for ${target.course}; run pnpm ingest first.`);
+  // A practice redo covers only the parts that were in the practice email; everything else is out of scope, not "missing".
+  const wanted = only && new Set(only.map(key));
+  const problems = wanted ? all.filter((p) => wanted.has(key(p.number))) : all;
+  if (!problems.length) throw new Error(`None of the practice parts match ${target.set} for ${target.course}.`);
   const notes = await q<{ slug: string; title: string; markdown: string }>(`select slug, title, markdown from notes where course = $1 order by slug`, [target.course]);
   const given = await officialFiles(target.course, target.set);
   // Official solutions exist if every part has one on record, or a solutions PDF is attached to cover parts ingestion left blank.
@@ -148,6 +156,7 @@ export async function gradeProblemSet(target: Target, files: string[], note = ""
 
   const blocks: Block[] = [{ type: "text", text: `Course ${target.course}, ${target.set}. ${official ? "Official solutions are available." : "There are NO official solutions for some or all parts."}` }];
   for (const f of given) blocks.push({ type: "text", text: `[Official material: ${path.basename(f)}]` }, fileBlock(f));
+  if (wanted) blocks.push({ type: "text", text: "This is a practice redo: the student re-did only the parts listed in <problems>. Grade only those parts; the rest of the set is out of scope. Do not mark anything else wrong." });
   blocks.push({ type: "text", text: `<problems>\n${JSON.stringify(problems)}\n</problems>` });
   blocks.push({ type: "text", text: `<notes>\n${notes.map((n) => `${n.slug} | ${n.title} | sections: ${[...n.markdown.matchAll(/^## (.+)$/gm)].map((m) => m[1]).slice(0, 12).join("; ")}`).join("\n")}\n</notes>` });
   files.forEach((f, i) => blocks.push({ type: "text", text: `[Student submission, file ${i + 1} of ${files.length}: ${path.basename(f)}]` }, fileBlock(f)));
@@ -170,7 +179,7 @@ export async function gradeProblemSet(target: Target, files: string[], note = ""
     ...target, official, found: g.found_answers && parts.some((p) => p.status !== "not_attempted"),
     parts, summary: unlatex(g.summary), topFixes: g.top_fixes.slice(0, 3),
     review: g.review.filter((r) => slugs.has(r.slug)).slice(0, 4).map((r) => ({ ...r, title: title(r.slug)! })),
-    score: score(parts), skipped,
+    score: score(parts), skipped, ...(wanted ? { practice: true } : {}),
   };
 }
 
@@ -208,10 +217,17 @@ function byQuestion(parts: GradedPart[], mode: "points" | "parts"): Q[] {
 export const missedParts = (parts: GradedPart[]) =>
   parts.filter((p) => p.status !== "correct").sort((a, b) => Number(a.status === "partial") - Number(b.status === "partial"));
 
+/** How a part came out on a practice redo, versus last time (when it was wrong). */
+const REDO = { correct: "fixed ✅", partial: "closer, still not right 🟡", incorrect: "still wrong ❌", not_attempted: "not attempted ⬜" } as const;
+
 export function renderReport(r: Report): { text: string; html: string } {
   const first = opt("STUDENT_NAME").split(/\s+/)[0];
   const sc = r.score;
-  const scoreStr = `${pts(sc.earned)}/${pts(sc.possible)}${sc.mode === "points" ? " points" : " parts"} (${sc.pct}%)`;
+  const practice = !!r.practice;
+  const setName = r.set.replace(/^PS/, "Problem Set ");
+  const fixed = r.parts.filter((p) => p.status === "correct").length;
+  const scoreStr = practice ? `Practice redo: ${fixed}/${r.parts.length}` : `${pts(sc.earned)}/${pts(sc.possible)}${sc.mode === "points" ? " points" : " parts"} (${sc.pct}%)`;
+  const intro = practice ? `I graded your ${setName} practice redo (${r.course}).` : `I graded your ${r.set} (${r.course}).`;
   const caveat = r.official ? "" : "Heads up: I don't have official solutions for this set, so I solved it myself first. Treat this grade as unofficial.";
   const qs = byQuestion(r.parts, sc.mode);
   const bad = r.parts.filter((p) => p.status !== "correct"); // in problem-set order
@@ -233,9 +249,11 @@ export function renderReport(r: Report): { text: string; html: string } {
   ].filter(Boolean) as string[];
 
   const text = [
-    `${first ? `Hi ${first}, ` : ""}I graded your ${r.set} (${r.course}).`, ...(caveat ? ["", caveat] : []), ...(skipped ? ["", skipped] : []), "",
-    `OVERALL: ${scoreStr}`, f(r.summary), "",
-    "BY QUESTION", ...rows.map((x) => `Q${x.n}  ${x.score.padEnd(5)} ${x.icons}   ${x.topic}`), "",
+    `${first ? `Hi ${first}, ` : ""}${intro}`, ...(caveat ? ["", caveat] : []), ...(skipped ? ["", skipped] : []), "",
+    practice ? scoreStr : `OVERALL: ${scoreStr}`, f(r.summary), "",
+    ...(practice
+      ? ["COMPARED WITH LAST TIME", ...r.parts.map((p) => `Q${p.number}: ${REDO[p.status]}`), ""]
+      : ["BY QUESTION", ...rows.map((x) => `Q${x.n}  ${x.score.padEnd(5)} ${x.icons}   ${x.topic}`), ""]),
     ...(bad.length ? ["WHAT TO FIX", ...bad.flatMap((p) => [`Q${p.number} ${ICON[p.status]} ${p.topic}${p.points_possible != null ? ` (${pts(p.points_earned ?? 0)}/${pts(p.points_possible)})` : ""}`, ...detail(p).map((l) => `   ${l}`), ""])] : ["Nothing to fix. That is a clean set.", ""]),
     ...(r.topFixes.length ? ["TOP THINGS TO WORK ON", ...r.topFixes.map((t, i) => `${i + 1}. ${f(t.title)}: ${f(t.detail)}`), ""] : []),
     ...(r.review.length ? ["REVIEW", ...r.review.map((n) => `• ${n.title}${n.section ? ` › ${n.section}` : ""} (${f(n.why)})${noteLink(r.course, n.slug) ? `: ${noteLink(r.course, n.slug)}` : ""}`), ""] : []),
@@ -244,12 +262,15 @@ export function renderReport(r: Report): { text: string; html: string } {
 
   const td = "padding:6px 10px;border-bottom:1px solid #eee;vertical-align:top";
   const html = `<div style="font-family:-apple-system,Segoe UI,sans-serif;max-width:620px;line-height:1.5;color:#222">
-<p>${first ? `Hi ${esc(first)}, ` : ""}I graded your ${esc(r.set)} (${esc(r.course)}).</p>
+<p>${first ? `Hi ${esc(first)}, ` : ""}${esc(intro)}</p>
 ${caveat ? `<p style="background:#fff8e1;border-radius:8px;padding:8px 12px;font-size:14px">${esc(caveat)}</p>` : ""}${skipped ? `<p style="color:#b4532a">${esc(skipped)}</p>` : ""}
 <p style="background:#fff4ec;border-radius:8px;padding:10px 14px;margin:12px 0"><span style="font-size:22px"><b>${esc(scoreStr)}</b></span><br>${esc(f(r.summary))}</p>
-<h3 style="margin-bottom:4px">By question</h3>
+${practice
+    ? `<h3 style="margin-bottom:4px">Compared with last time</h3>
+<table style="border-collapse:collapse;width:100%;font-size:14px">${r.parts.map((p) => `<tr><td style="${td}"><b>Q${esc(p.number)}</b></td><td style="${td}">${esc(p.topic)}</td><td style="${td};white-space:nowrap">${esc(REDO[p.status])}</td></tr>`).join("\n")}</table>`
+    : `<h3 style="margin-bottom:4px">By question</h3>
 <table style="border-collapse:collapse;width:100%;font-size:14px"><tr style="text-align:left;color:#888"><th style="${td}">Q</th><th style="${td}">Topic</th><th style="${td}">Score</th><th style="${td}">Parts</th></tr>
-${rows.map((x) => `<tr><td style="${td}"><b>${esc(x.n)}</b></td><td style="${td}">${esc(x.topic)}</td><td style="${td};white-space:nowrap">${esc(x.score)}</td><td style="${td};white-space:nowrap">${esc(x.icons)}</td></tr>`).join("\n")}</table>
+${rows.map((x) => `<tr><td style="${td}"><b>${esc(x.n)}</b></td><td style="${td}">${esc(x.topic)}</td><td style="${td};white-space:nowrap">${esc(x.score)}</td><td style="${td};white-space:nowrap">${esc(x.icons)}</td></tr>`).join("\n")}</table>`}
 ${bad.length ? `<h3 style="margin-bottom:4px">What to fix</h3>${bad.map((p) => `<p style="margin:8px 0">${ICON[p.status]} <b>Q${esc(p.number)}</b> · ${esc(p.topic)}${p.points_possible != null ? ` (${pts(p.points_earned ?? 0)}/${pts(p.points_possible)})` : ""}<br><span style="color:#444">${detail(p).map(esc).join("<br>")}</span></p>`).join("")}` : "<p>Nothing to fix. That is a clean set.</p>"}
 ${r.topFixes.length ? `<h3 style="margin-bottom:4px">Top things to work on</h3><ol>${r.topFixes.map((t) => `<li style="margin-bottom:6px"><b>${esc(f(t.title))}</b>: ${esc(f(t.detail))}</li>`).join("")}</ol>` : ""}
 ${r.review.length ? `<h3 style="margin-bottom:4px">Review</h3><ul>${r.review.map((n) => { const href = noteLink(r.course, n.slug), label = `<b>${esc(n.title)}</b>${n.section ? ` › ${esc(n.section)}` : ""}`; return `<li>${href ? `<a href="${esc(href)}">${label}</a>` : label} <span style="color:#555">(${esc(f(n.why))})</span></li>`; }).join("")}</ul>` : ""}
