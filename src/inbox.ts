@@ -79,7 +79,15 @@ export async function pollInbox() {
       await recordWeakTopics(report, `email:${m.messageId}`); // idempotent, so a retry after a failed send doesn't double up
       const { text, html } = renderReport(report);
       await mail().inboxes.messages.reply(inbox.id, m.messageId, { text, html });
-      await finishMessage(m.messageId, "graded", `${target.set} ${report.score.earned}/${report.score.possible}`);
+      // The report is already in the student's inbox, so never let a bookkeeping failure trigger a second send.
+      // Retry the write a few times; the claim stays in 'working' only if the database is down for all of them.
+      for (let attempt = 1; ; attempt++) {
+        try { await finishMessage(m.messageId, "graded", `${target.set} ${report.score.earned}/${report.score.possible}`); break; }
+        catch (e) {
+          if (attempt >= 3) { console.error(`   ⚠ report sent but status not recorded: ${(e as Error).message}`); break; }
+          await new Promise((r) => setTimeout(r, 1000 * attempt));
+        }
+      }
       console.log(`   ✓ ${target.set} graded ${report.score.earned}/${report.score.possible} (${report.score.pct}%), report sent`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

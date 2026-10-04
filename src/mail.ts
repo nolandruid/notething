@@ -308,26 +308,30 @@ export async function pollReplies() {
     }], { system: COACH, maxTokens: 8000 });
 
     const byId = new Map(items.map((it) => [it.id, it]));
-    for (const r of g.results) if (byId.has(r.quiz_item_id))
-      await q(`insert into attempts (quiz_item_id, response, correct, feedback, reply_message_id) values ($1,$2,$3,$4,$5)`, [r.quiz_item_id, r.response, r.correct, r.feedback, reply.messageId]);
-    if (g.results.every((r) => !r.response.trim())) {
+    // Only trust results that point at a real question in this session, once each.
+    const seen = new Set<number>();
+    const results = g.results.filter((r) => byId.has(r.quiz_item_id) && !seen.has(r.quiz_item_id) && !!seen.add(r.quiz_item_id));
+    if (!results.length) throw new Error("The grader's results didn't match any question in this session");
+    if (results.every((r) => !r.response.trim())) {
       // The model found nothing it could call an answer: don't count a blank reply as all wrong.
       console.log(`📥 Reply on session #${s.id} has no answers; asking for them (session stays open)`);
       await dismiss();
       await askForAnswers(inbox.id, reply.messageId);
       continue;
     }
+    for (const r of results)
+      await q(`insert into attempts (quiz_item_id, response, correct, feedback, reply_message_id) values ($1,$2,$3,$4,$5)`, [r.quiz_item_id, r.response, r.correct, r.feedback, reply.messageId]);
     await dismiss(reply.messageId);
 
-    const missed = g.results.filter((r) => !r.correct).map((r) => byId.get(r.quiz_item_id)).filter((x): x is QuizItem => !!x);
-    const score = `${g.results.length - missed.length}/${g.results.length}`;
+    const missed = results.filter((r) => !r.correct).map((r) => byId.get(r.quiz_item_id)).filter((x): x is QuizItem => !!x);
+    const score = `${results.length - missed.length}/${results.length}`;
 
-    const text = [g.summary, "", `Score: ${score}`, "", ...g.results.map((r, i) => {
+    const text = [g.summary, "", `Score: ${score}`, "", ...results.map((r, i) => {
       const it = byId.get(r.quiz_item_id);
       return `${i + 1}. ${r.correct ? "✅" : "❌"} ${it?.question ?? ""}\n   ${r.feedback}${r.reexplain ? `\n   Quick re-explain: ${r.reexplain}` : ""}${!r.correct && it ? `\n   Model answer: ${it.answer}` : ""}`;
     }), "", missed.length ? "I've added these to your next session so we lock them in." : "Clean sweep. Next session will push a bit further.", "", "— NoteThing"].join("\n");
     const html = `<div style="font-family:-apple-system,Segoe UI,sans-serif;max-width:620px;line-height:1.5;color:#222">
-<p>${para(g.summary)}</p><p><b>Score: ${score}</b></p><ol>${g.results.map((r) => {
+<p>${para(g.summary)}</p><p><b>Score: ${score}</b></p><ol>${results.map((r) => {
       const it = byId.get(r.quiz_item_id);
       return `<li style="margin-bottom:10px">${r.correct ? "✅" : "❌"} ${para(it?.question ?? "")}<br><span style="color:#444">${para(r.feedback)}</span>${r.reexplain ? `<br><span style="color:#b4532a"><b>Re-explain:</b> ${para(r.reexplain)}</span>` : ""}${!r.correct && it ? `<br><span style="color:#555"><b>Model answer:</b> ${para(it.answer)}</span>` : ""}</li>`;
     }).join("")}</ol><p>${missed.length ? "I've added these to your next session so we lock them in." : "Clean sweep. Next session will push a bit further."}</p><p style="color:#888">— NoteThing</p></div>`;

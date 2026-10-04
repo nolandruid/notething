@@ -220,9 +220,16 @@ Format rules:
 - End with '## Key terms': a bullet list of terms with one-line definitions.
 Be accurate and complete: carry over every definition, formula, worked example and exercise from the sources. Do not invent content the sources don't support, and if something is truly illegible say so once rather than guessing. Don't write meta-commentary about the source files.`;
 
-/** Strip control characters and repair LaTeX commands whose backslash was eaten as a JSON escape (\f, \b, \t, \r). */
+/** LaTeX commands that start with "n": inside math, a newline followed by one of these was really `\\nu`, `\\neq`, ... */
+const N_COMMANDS = /\n(?=(?:u|eq|e|abla|ot|i|leq|geq|less|gtr|mid|parallel|subseteq|Rightarrow|rightarrow|exists|ewline|cong|sim|warrow|earrow|vdash|atural)(?![a-zA-Z]))/g;
+
+/**
+ * Strip control characters and repair LaTeX commands whose backslash was eaten as a JSON escape (\f, \b, \t, \r,
+ * and \n inside math). Newlines outside math are real Markdown line breaks and are left alone.
+ */
 export function cleanMarkdown(md: string) {
   return md
+    .replace(/\$\$[\s\S]+?\$\$|\$[^$]+?\$/g, (math) => math.replace(N_COMMANDS, "\\n"))
     .replace(/\f/g, "\\f").replace(/\x08/g, "\\b").replace(/\t(?=[a-zA-Z])/g, "\\t").replace(/\r(?=[a-zA-Z])/g, "\\r")
     .replace(/[\x00-\x08\x0b\x0e-\x1f]/g, "");
 }
@@ -272,7 +279,7 @@ Typed notes (if present) are the most accurate text; the scanned handwritten PDF
   const fm = [
     "---", `course: ${course}`, `lecture: ${JSON.stringify(topic || r.title)}`,
     `source:`, ...group.map((g) => `  - ${JSON.stringify(g.rel)}`),
-    `tags: [${[...new Set(["notething", course, ...r.tags.map(slugify)])].join(", ")}]`, `created: ${isoDate(new Date())}`, "---", "",
+    `tags: [${[...new Set(["notething", course, ...r.tags.map(slugify).filter((tag) => tag !== slugify(course))])].join(", ")}]`, `created: ${isoDate(new Date())}`, "---", "",
   ].join("\n");
   const full = fm + md.trim() + "\n";
   fs.mkdirSync(path.join(VAULT_DIR, course), { recursive: true });

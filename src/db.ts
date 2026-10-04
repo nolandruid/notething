@@ -103,13 +103,18 @@ export async function isProcessed(id: string): Promise<boolean> {
   return !!r && !(r.kind === "failed" && r.failures < MAX_FAILURES);
 }
 
-/** Atomically take ownership of a message so it is never handled twice. A previously failed message can be re-claimed until it has failed MAX_FAILURES times. */
+/** How long a message may sit in `working` before we assume the process that claimed it died. */
+const STALE_CLAIM = "30 minutes";
+
+/** Atomically take ownership of a message so it is never handled twice. A previously failed message can be re-claimed until it has failed MAX_FAILURES times, and a claim abandoned by a crashed process can be taken over after STALE_CLAIM. */
 export async function claimMessage(id: string, kind = "working"): Promise<boolean> {
   await ensureProcessedTable();
   const r = await q(
     `insert into processed_messages (message_id, kind) values ($1, $2)
-     on conflict (message_id) do update set kind = $2 where processed_messages.kind = 'failed' and processed_messages.failures < $3
-     returning message_id`, [id, kind, MAX_FAILURES]);
+     on conflict (message_id) do update set kind = $2, created_at = now()
+       where (processed_messages.kind = 'failed' and processed_messages.failures < $3)
+          or (processed_messages.kind = 'working' and processed_messages.created_at < now() - $4::interval)
+     returning message_id`, [id, kind, MAX_FAILURES, STALE_CLAIM]);
   return r.length > 0;
 }
 
