@@ -12,6 +12,7 @@ reviews:
     drafts: false
     base_branches:
       - main
+      - ".*"
   path_filters:
     - "!pnpm-lock.yaml"
     - "!content/**"
@@ -21,7 +22,7 @@ reviews:
       instructions: >-
         TypeScript ESM CLI run with tsx. Flag unhandled promise rejections, SQL built by string
         concatenation (queries must be parameterized), secrets or personal course content being
-        logged or committed, and missing handling of Claude stop reasons (refusal / max_tokens).
+        logged or committed, and missing handling of model finish reasons (length / content_filter) and malformed JSON from the model.
     - path: "scripts/**/*.py"
       instructions: >-
         Runs on the user's machine or VPS. Check temp files are cleaned up and that untrusted

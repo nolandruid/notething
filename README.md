@@ -17,13 +17,13 @@ flowchart LR
     W[Your submitted work]
   end
   V -->|faster-whisper<br/>local or SSH| T[Timestamped transcript]
-  A & B & T -->|Claude: merge per lecture| N[Obsidian note<br/>sections + explain callouts<br/>SVG graphs, wikilinks, key terms]
-  S -->|Claude| X[(Neon Postgres<br/>tests, notes, sessions,<br/>quiz items, attempts)]
-  P & W -->|Claude: grade your PS| X
+  A & B & T -->|LLM: merge per lecture| N[Obsidian note<br/>sections + explain callouts<br/>SVG graphs, wikilinks, key terms]
+  S -->|LLM| X[(Neon Postgres<br/>tests, notes, sessions,<br/>quiz items, attempts)]
+  P & W -->|LLM: grade your PS| X
   N --> X
   X -->|plan| Sch[Sessions until each test]
   Sch -->|AgentMail| E[Coach email:<br/>what to read, ~time, quiz]
-  E -->|you reply| G[Claude grades +<br/>re-explains misses]
+  E -->|you reply| G[LLM grades +<br/>re-explains misses]
   G -->|re-weight weak topics| Sch
 ```
 
@@ -44,14 +44,15 @@ pnpm migrate
 
 | Variable | What |
 |---|---|
-| `ANTHROPIC_API_KEY` | Claude API key |
+| `OPENROUTER_API_KEY` | [OpenRouter](https://openrouter.ai/keys) API key (all model calls go through it) |
 | `AGENTMAIL_API_KEY` | AgentMail API key |
 | `AGENTMAIL_INBOX` | Optional: inbox to send from. Leave blank and run `pnpm inbox` to create `notething@agentmail.to` |
 | `STUDENT_EMAIL` | Where sessions are emailed |
 | `STUDENT_NAME` | Optional: your name, so files like `Jane_Doe_PS1.pdf` are recognized as your own work |
 | `DATABASE_URL` | Neon Postgres connection string |
 | `VAULT_DIR` | Optional: point at your Obsidian vault (default `./vault`) |
-| `NOTETHING_MODEL` | Default `claude-sonnet-5-5` |
+| `NOTETHING_MODEL` | Any OpenRouter model id that accepts image + file input (default `openai/gpt-6-luna`) |
+| `NOTETHING_CHEAP_MODEL` | Model for file classification (default `openai/gpt-5-nano`) |
 | `STUDY_HOUR` | Local hour sessions are scheduled (default 18) |
 | `WHISPER_MODEL` | faster-whisper model (default `small`) |
 | `TRANSCRIBE_SSH_HOST` | Optional: transcribe on a remote box over SSH instead of locally |
@@ -72,11 +73,11 @@ pnpm inbox               # create/show the AgentMail inbox
 
 ## Privacy
 
-Your course materials never enter this repo: `content/`, `vault/` and `.env` are gitignored. Files go only to the Claude API for processing (and to your own machine or VPS for transcription). The repo contains only code.
+Your course materials never enter this repo: `content/`, `vault/` and `.env` are gitignored. Files go only to OpenRouter (and the model provider it routes to) for processing (and to your own machine or VPS for transcription). The repo contains only code.
 
 ## Built with
 
-- [Claude](https://www.anthropic.com/api): reads handwriting and graphs via PDF vision, writes notes, quizzes and grades
+- [OpenRouter](https://openrouter.ai): one API for the models that read handwriting and graphs, write notes, quizzes and grades
 - [Neon](https://neon.tech): serverless Postgres for courses, notes, sessions and attempts
 - [AgentMail](https://agentmail.to): the coach's inbox; sends sessions and receives your replies
 - [CodeRabbit](https://coderabbit.ai): reviews every PR
