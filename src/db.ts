@@ -15,6 +15,10 @@ export async function q<T = Record<string, any>>(text: string, params: unknown[]
   return (await db().query(text, params)) as T[];
 }
 
+const PROCESSED_DDL = `create table if not exists processed_messages (
+     message_id text primary key, kind text not null, detail text, failures int not null default 0,
+     created_at timestamptz default now())`;
+
 const SCHEMA = [
   `create table if not exists courses (name text primary key, created_at timestamptz default now())`,
   `create table if not exists documents (
@@ -51,6 +55,7 @@ const SCHEMA = [
      id serial primary key, course text not null, topic text not null, correct boolean not null,
      source text not null, note text)`,
   `create table if not exists settings (key text primary key, value text not null)`,
+  PROCESSED_DDL,
 ];
 
 export async function migrate() {
@@ -80,3 +85,42 @@ export async function courses(only?: string): Promise<string[]> {
   if (only) return [only];
   return (await q<{ name: string }>(`select name from courses order by name`)).map((r) => r.name);
 }
+
+// ---------- inbound messages we've already dealt with ----------
+
+const MAX_FAILURES = 3;
+let processedReady: Promise<unknown> | undefined;
+/** Older databases predate `processed_messages`; create it on first use so `pnpm poll` works without re-migrating. */
+export function ensureProcessedTable() {
+  processedReady ??= q(PROCESSED_DDL).catch((e) => { processedReady = undefined; throw e; });
+  return processedReady;
+}
+
+/** True once a message is claimed, finished, or has failed too many times to retry. */
+export async function isProcessed(id: string): Promise<boolean> {
+  await ensureProcessedTable();
+  const r = (await q<{ kind: string; failures: number }>(`select kind, failures from processed_messages where message_id = $1`, [id]))[0];
+  return !!r && !(r.kind === "failed" && r.failures < MAX_FAILURES);
+}
+
+/** Atomically take ownership of a message so it is never handled twice. A previously failed message can be re-claimed until it has failed MAX_FAILURES times. */
+export async function claimMessage(id: string, kind = "working"): Promise<boolean> {
+  await ensureProcessedTable();
+  const r = await q(
+    `insert into processed_messages (message_id, kind) values ($1, $2)
+     on conflict (message_id) do update set kind = $2 where processed_messages.kind = 'failed' and processed_messages.failures < $3
+     returning message_id`, [id, kind, MAX_FAILURES]);
+  return r.length > 0;
+}
+
+export async function finishMessage(id: string, kind: string, detail?: string) {
+  await q(`update processed_messages set kind = $2, detail = $3 where message_id = $1`, [id, kind, detail ?? null]);
+}
+
+/** Record a failure; returns the new failure count (the caller gives up at MAX_FAILURES). */
+export async function failMessage(id: string, error: string): Promise<number> {
+  const r = await q<{ failures: number }>(
+    `update processed_messages set kind = 'failed', detail = $2, failures = failures + 1 where message_id = $1 returning failures`, [id, error.slice(0, 500)]);
+  return r[0]?.failures ?? MAX_FAILURES;
+}
+export const GIVE_UP_AFTER = MAX_FAILURES;
