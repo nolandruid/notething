@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { courses, now, q } from "./db.js";
-import { isoDate, STUDY_HOUR } from "./env.js";
+import { isoDate, parseDay, STUDY_HOUR } from "./env.js";
 import { askJSON } from "./llm.js";
 
 interface Note { slug: string; title: string; lecture: string | null }
@@ -8,7 +8,6 @@ interface Test { name: string; date: string | null; topics: string[] }
 
 const at = (day: Date) => { const d = new Date(day); d.setHours(STUDY_HOUR, 0, 0, 0); return d; };
 const addDays = (d: Date, n: number) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
-const parseDay = (s: string) => { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); };
 
 /** Ask the model which notes each test covers (falls back to "all notes"). */
 async function mapTestsToNotes(tests: Test[], notes: Note[]): Promise<Record<string, string[]>> {
@@ -28,6 +27,20 @@ async function mapTestsToNotes(tests: Test[], notes: Note[]): Promise<Record<str
   return all;
 }
 
+/** Put missed-question retries back on the earliest pending session (creating one if the rebuild made none). */
+async function restoreRetries(course: string, items: { question: string; answer: string; topic: string; note_slug: string | null }[], testName: string | null, today: Date) {
+  let next = (await q<{ id: number; topics: string[]; note_slugs: string[] }>(`select id, topics, note_slugs from sessions where course = $1 and status = 'pending' order by scheduled_for limit 1`, [course]))[0];
+  if (!next) {
+    const d = addDays(today, 1); d.setHours(STUDY_HOUR, 0, 0, 0);
+    next = (await q<{ id: number; topics: string[]; note_slugs: string[] }>(`insert into sessions (course, scheduled_for, kind, test_name) values ($1,$2,'practice',$3) returning id, topics, note_slugs`, [course, d, testName]))[0];
+  }
+  const topics = [...new Set([...next.topics, ...items.map((m) => `revisit: ${m.topic}`)])];
+  const slugs = [...new Set([...next.note_slugs, ...items.map((m) => m.note_slug).filter((x): x is string => !!x)])];
+  await q(`update sessions set topics = $2, note_slugs = $3 where id = $1`, [next.id, topics, slugs]);
+  for (const m of items)
+    await q(`insert into quiz_items (session_id, question, answer, topic, note_slug, is_retry) values ($1,$2,$3,$4,$5,true)`, [next.id, m.question, m.answer, m.topic, m.note_slug]);
+}
+
 /**
  * Rebuild the pending schedule: from today until each dated test, spread that test's notes over
  * the available days (new lectures first, each with a spaced revisit of the previous one), then
@@ -43,6 +56,11 @@ export async function plan(only?: string) {
     const covers = await mapTestsToNotes(tests, notes);
     const title = (slug: string) => notes.find((n) => n.slug === slug)?.title ?? slug;
 
+    // Retry questions from missed answers live on pending sessions; the delete below would cascade
+    // to them, so hold on to them and put them back on the first rebuilt session.
+    const carried = await q<{ question: string; answer: string; topic: string; note_slug: string | null }>(
+      `select qi.question, qi.answer, qi.topic, qi.note_slug from quiz_items qi join sessions s on s.id = qi.session_id
+       where s.course = $1 and s.status = 'pending' and qi.is_retry order by qi.id`, [course]);
     await q(`delete from sessions where course = $1 and status = 'pending'`, [course]);
     let start = today.getHours() < STUDY_HOUR ? today : addDays(today, 1);
     start = new Date(start.getFullYear(), start.getMonth(), start.getDate());
@@ -78,6 +96,7 @@ export async function plan(only?: string) {
       }
       start = addDays(testDay, 1);
     }
+    if (carried.length) await restoreRetries(course, carried, tests[0]?.name ?? null, today);
     const rows = await q<{ scheduled_for: Date; kind: string; topics: string[] }>(`select scheduled_for, kind, topics from sessions where course = $1 and status = 'pending' order by scheduled_for`, [course]);
     console.log(`\n🗓  ${course}: ${made} sessions planned toward ${tests.map((t) => `${t.name} (${t.date})`).join(", ")}`);
     for (const r of rows) console.log(`  ${isoDate(new Date(r.scheduled_for))} ${String(STUDY_HOUR).padStart(2, "0")}:00  [${r.kind}] ${r.topics.join(" · ")}`);

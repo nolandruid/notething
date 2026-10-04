@@ -45,18 +45,21 @@ else:
 
 from faster_whisper import WhisperModel
 
-model = WhisperModel(os.environ.get("WHISPER_MODEL", "small"), device="auto", compute_type="int8")
-audio = load_audio(path)
-segments, info = model.transcribe(audio, vad_filter=True)
-data = {
-    "file": os.path.basename(src) if not downloaded else src,
-    "title": title,
-    "duration": round(len(audio) / 16000, 1),
-    "language": info.language,
-    "segments": [{"start": round(s.start, 1), "end": round(s.end, 1), "text": s.text.strip()} for s in segments],
-}
-with open(out, "w") as f:
-    json.dump(data, f)
-if downloaded and os.path.exists(downloaded):
-    os.remove(downloaded)
+try:
+    model = WhisperModel(os.environ.get("WHISPER_MODEL", "small"), device="auto", compute_type="int8")
+    audio = load_audio(path)
+    segments, info = model.transcribe(audio, vad_filter=True)
+    data = {
+        "file": os.path.basename(src) if not downloaded else src,
+        "title": title,
+        "duration": round(len(audio) / 16000, 1),
+        "language": info.language,
+        "segments": [{"start": round(s.start, 1), "end": round(s.end, 1), "text": s.text.strip()} for s in segments],
+    }
+    with open(out, "w") as f:
+        json.dump(data, f)
+finally:
+    # Never leave a downloaded video behind, even if transcription fails.
+    if downloaded and os.path.exists(downloaded):
+        os.remove(downloaded)
 print(f"ok {len(data['segments'])} segments, {data['duration']}s")

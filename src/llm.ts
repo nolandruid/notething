@@ -32,6 +32,9 @@ export function fileBlock(file: string): Block {
   return { type: "text", text: `<file name="${path.basename(file)}">\n${data.toString("utf8")}\n</file>` };
 }
 
+/** The model finished in a way that retrying or switching engines won't fix (out of tokens, filtered). */
+class TerminalModelError extends Error {}
+
 type Opts = { system?: string; model?: string; maxTokens?: number; effort?: "low" | "medium" | "high" };
 
 /** One streamed chat completion via OpenRouter. Returns the text, or throws with the finish reason. */
@@ -46,8 +49,10 @@ async function complete(body: Record<string, unknown>): Promise<string> {
     text += c?.delta?.content ?? "";
     if (c?.finish_reason) finish = c.finish_reason;
   }
-  if (finish === "length") throw new Error("Model ran out of output tokens; try a smaller file or raise maxTokens");
-  if (finish === "content_filter") throw new Error("Model declined this request (content filter)");
+  if (finish === "length") throw new TerminalModelError("Model ran out of output tokens; try a smaller file or raise maxTokens");
+  if (finish === "content_filter") throw new TerminalModelError("Model declined this request (content filter)");
+  // A stream that stops without a clean "stop" may be cut off mid-JSON, so don't accept its text.
+  if (finish?.toLowerCase() !== "stop") throw new Error(`Model stream ended without finishing (finish_reason: ${finish ?? "none"})`);
   if (!text.trim()) throw new Error("Model returned an empty response");
   return text;
 }
@@ -92,7 +97,7 @@ export async function askJSON<S extends z.ZodType>(schema: S, content: Block[], 
         });
         return schema.parse(extractJSON(text));
       } catch (e) {
-        if (e instanceof Error && /tokens|declined/.test(e.message)) throw e;
+        if (e instanceof TerminalModelError) throw e;
         lastErr = e;
       }
       // 2) JSON-only prompting + zod validation, one retry
@@ -108,6 +113,8 @@ export async function askJSON<S extends z.ZodType>(schema: S, content: Block[], 
         }
       }
     } catch (e) {
+      // Out-of-tokens and content-filter errors would just repeat on the next engine (and cost more), so surface them now.
+      if (e instanceof TerminalModelError) throw e;
       lastErr = e;
     }
   }

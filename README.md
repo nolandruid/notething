@@ -1,4 +1,4 @@
-<p align="center"><img src="docs/logo.png" width="180"></p>
+<p align="center"><img src="docs/logo.png" alt="NoteThing logo" width="180"></p>
 
 # NoteThing
 
