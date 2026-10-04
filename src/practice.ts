@@ -143,13 +143,16 @@ export async function practice(args: string[]) {
     if (forced.length) {
       const sets = new Set(rows.map((r) => r.note?.match(/^(PS\d+) /)?.[1]).filter((s): s is string => !!s));
       const chosen = [...sets].at(-1) ?? "PS1";
-      misses = forced.map((n) => misses.find((m) => partKey(m.number) === partKey(n)) ?? { set: chosen, number: n, note: "you asked to redo this one" });
+      // One set for every forced part: the set of a part that was actually missed, else the most recent set graded.
+      const base = misses.find((m) => forced.some((n) => partKey(m.number) === partKey(n)))?.set ?? chosen;
+      misses = forced.map((n) => misses.find((m) => m.set === base && partKey(m.number) === partKey(n)) ?? { set: base, number: n, note: "you asked to redo this one" });
     } else if (set) misses = misses.filter((m) => m.set === set);
     const target = forced.length ? misses[0].set : set;
     if (!target || !misses.length) { console.log(`${c}: nothing missed, nothing to practice.`); continue; }
 
     console.error(`→ ${c} ${target}: ${misses.length} part(s) to redo (${misses.map((m) => m.number).join(", ")})`);
     const items = await buildItems(c, target, misses);
+    if (!items.length) { console.log(`${c} ${target}: none of the requested parts exist in this set.`); continue; }
     const { subject, text, html } = renderPractice(target, items);
     if (dry) { console.log(`Subject: ${subject}\n\n${text}`); continue; }
 
