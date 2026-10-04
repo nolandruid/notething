@@ -1,0 +1,36 @@
+{
+  "name": "notething",
+  "version": "0.1.0",
+  "description": "Your course, read for you. Study notes + a prep schedule that shows up in your inbox.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Nolan Druid",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "migrate": "tsx src/cli.ts migrate",
+    "ingest": "tsx src/cli.ts ingest",
+    "plan": "tsx src/cli.ts plan",
+    "send-next": "tsx src/cli.ts send-next",
+    "poll": "tsx src/cli.ts poll",
+    "fast-forward": "tsx src/cli.ts fast-forward",
+    "run": "tsx src/cli.ts run",
+    "start": "tsx src/cli.ts run",
+    "inbox": "tsx src/cli.ts inbox",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.131.0",
+    "@neondatabase/serverless": "^1.2.0",
+    "agentmail": "^0.5.35",
+    "dotenv": "^18.0.5",
+    "mammoth": "^1.13.0",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}
