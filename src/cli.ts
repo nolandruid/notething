@@ -1,9 +1,11 @@
 import { migrate } from "./db.js";
 import { ingest } from "./ingest.js";
+import { gradeFiles } from "./gradecli.js";
+import { pollInbox } from "./inbox.js";
 import { ensureInbox, fastForward, pollReplies, sendNext } from "./mail.js";
 import { plan } from "./plan.js";
 
-const [cmd, arg] = process.argv.slice(2);
+const [cmd, arg, ...rest] = process.argv.slice(2);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const HELP = `NoteThing — your course, read for you.
@@ -12,7 +14,8 @@ const HELP = `NoteThing — your course, read for you.
   pnpm ingest [course]      turn content/<course>/ files into Obsidian notes (+ tests, problem sets)
   pnpm plan [course]        build the study schedule toward each test
   pnpm send-next            email the next due study session
-  pnpm poll                 grade replies and adjust the plan
+  pnpm poll                 grade replies and emailed problem sets, adjust the plan
+  pnpm grade <file...>      dry run: grade a problem set PDF/photos and print the report (no email, no DB writes)
   pnpm fast-forward <n>     demo: send the next n sessions right now
   pnpm start                ingest + send + poll every 60s (alias: pnpm run run)
   pnpm inbox                create/show the AgentMail inbox`;
@@ -23,7 +26,8 @@ async function main() {
     case "ingest": return ingest(arg);
     case "plan": return plan(arg);
     case "send-next": return void (await sendNext());
-    case "poll": return pollReplies();
+    case "poll": { await pollInbox(); return pollReplies(); }
+    case "grade": return gradeFiles([arg, ...rest].filter((f): f is string => !!f));
     case "fast-forward": {
       const n = Number(arg ?? 1);
       if (!Number.isInteger(n) || n < 1) throw new Error("usage: fast-forward <n>");
@@ -33,7 +37,7 @@ async function main() {
     case "run": {
       console.log("🔁 NoteThing running (Ctrl-C to stop)");
       for (;;) {
-        for (const step of [() => ingest(), async () => { while (await sendNext()); }, () => pollReplies()]) {
+        for (const step of [() => ingest(), async () => { while (await sendNext()); }, async () => { await pollInbox(); await pollReplies(); }]) {
           try { await step(); } catch (e) { console.error(`✗ ${(e as Error).message}`); }
         }
         await sleep(60_000);
