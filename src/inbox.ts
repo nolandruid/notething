@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { claimMessage, ensureProcessedTable, failMessage, finishMessage, GIVE_UP_AFTER } from "./db.js";
+import { q, claimMessage, ensureProcessedTable, failMessage, finishMessage, GIVE_UP_AFTER } from "./db.js";
 import { need } from "./env.js";
 import { gradeProblemSet, identifyProblemSet, recordWeakTopics, renderReport } from "./grade.js";
 import { isImage } from "./llm.js";
@@ -65,9 +65,11 @@ export async function pollInbox() {
         await finishMessage(m.messageId, "unreadable", skipped.join(", "));
         continue;
       }
-      const target = await identifyProblemSet(files, m.subject ?? "", note);
+      // A reply on one of our session emails tells us the course even when the subject never says "Problem Set N".
+      const courseHint = m.threadId ? (await q<{ course: string }>(`select course from sessions where thread_id = $1 limit 1`, [m.threadId]))[0]?.course : undefined;
+      const target = await identifyProblemSet(files, m.subject ?? "", note, courseHint);
       if (!target) {
-        await replyShort(inbox.id, m.messageId, "I got your attachment but couldn't tell which problem set it answers. Reply with the set name (for example \"PS1\") and attach it again, and I'll grade it.");
+        await replyShort(inbox.id, m.messageId, "Which problem set is this? I got your attachment but couldn't tell which one it answers. Reply with the set name (for example \"PS1\") and attach it again, and I'll grade it.");
         await finishMessage(m.messageId, "unknown_set");
         continue;
       }
@@ -97,7 +99,7 @@ export async function pollInbox() {
       const msg = e instanceof Error ? e.message : String(e);
       const failures = await failMessage(m.messageId, msg);
       console.error(`   ✗ grading failed (${failures}/${GIVE_UP_AFTER}): ${errLabel(e)}`);
-      if (failures >= GIVE_UP_AFTER) {
+      if (failures === GIVE_UP_AFTER) { // exactly once, so a racing process can't send a second apology
         try { await replyShort(inbox.id, m.messageId, "I couldn't grade that one, even after a few tries. Try sending it again as a single PDF; if it keeps failing, something is up on my end."); } catch { /* best effort */ }
       }
     } finally {
