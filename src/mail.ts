@@ -2,7 +2,7 @@ import { AgentMailClient } from "agentmail";
 import path from "node:path";
 import { z } from "zod";
 import { getSetting, now, q, setSetting } from "./db.js";
-import { isoDate, need, opt, STUDY_HOUR, VAULT_DIR } from "./env.js";
+import { isoDate, need, opt, parseDay, STUDY_HOUR, VAULT_DIR } from "./env.js";
 import { askJSON } from "./llm.js";
 
 interface Session {
@@ -95,7 +95,8 @@ async function composeSession(s: Session) {
   const st = await stats(s.course);
   const test = s.test_name ? (await q<{ date: string }>(`select to_char(date,'YYYY-MM-DD') as date from tests where course = $1 and name = $2`, [s.course, s.test_name]))[0] : undefined;
   const today = await now();
-  const daysLeft = test?.date ? Math.ceil((new Date(test.date).getTime() - today.getTime()) / 86400000) : undefined;
+  const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const daysLeft = test?.date ? Math.round((parseDay(test.date).getTime() - startOfToday.getTime()) / 86400000) : undefined;
   const nNew = Math.max(2, 5 - retries.length);
 
   const plan = await askJSON(SessionSchema, [{
@@ -189,6 +190,9 @@ export async function fastForward(n: number) {
 
 // ---------- replies & grading ----------
 
+/** "Nolan <nolan@x.com>" -> "nolan@x.com" (lowercased). */
+const senderAddress = (from: string) => (from.match(/<([^>]+)>/)?.[1] ?? from).trim().toLowerCase();
+
 const GradeSchema = z.object({
   results: z.array(z.object({
     quiz_item_id: z.number(),
@@ -220,7 +224,9 @@ export async function pollReplies() {
   const open = await q<Session>(`select * from sessions where status = 'sent' and thread_id is not null order by sent_at`);
   for (const s of open) {
     const thread = await mail().inboxes.threads.get(inbox.id, s.thread_id!);
-    const replies = thread.messages.filter((m) => !m.from.toLowerCase().includes(inbox.email.toLowerCase()));
+    // Only the student can answer: ignore the coach's own messages and anyone else on the thread.
+    const student = need("STUDENT_EMAIL").toLowerCase();
+    const replies = thread.messages.filter((m) => senderAddress(m.from) === student);
     const reply = replies.at(-1);
     if (!reply) continue;
     const answer = reply.extractedText ?? reply.text ?? reply.preview ?? "";
