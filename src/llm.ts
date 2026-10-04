@@ -33,7 +33,7 @@ export function fileBlock(file: string): Block {
 }
 
 /** The model finished in a way that retrying or switching engines won't fix (out of tokens, filtered). */
-class TerminalModelError extends Error {}
+export class TerminalModelError extends Error {}
 
 type Opts = { system?: string; model?: string; maxTokens?: number; effort?: "low" | "medium" | "high" };
 

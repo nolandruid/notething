@@ -3,7 +3,7 @@ import path from "node:path";
 import { z } from "zod";
 import { q } from "./db.js";
 import { CHEAP_MODEL, CONTENT_DIR, opt } from "./env.js";
-import { askJSON, fileBlock, type Block } from "./llm.js";
+import { askJSON, fileBlock, TerminalModelError, type Block } from "./llm.js";
 import { COACH, esc, noteLink, pushRetries, type Retry } from "./mail.js";
 import { UserError } from "./redact.js";
 
@@ -43,12 +43,14 @@ export async function identifyProblemSet(files: string[], subject = "", body = "
   const sets = await knownSets();
   if (!sets.length) return null;
   const hay = [subject, body, ...files.map((f) => path.basename(f))].join("\n");
-  const squash = (s: string) => s.toLowerCase().replace(/[\s_-]/g, "");
+  // "econ3020" matches "Econ3020" and "ECON 3020" but never "econ30201" (whole identifier only).
+  const mentions = (text: string, course: string) =>
+    new RegExp(`(?<![a-z0-9])${[...course.toLowerCase()].map((c) => c.replace(/[^a-z0-9]/g, "\\$&")).join("[\\s_-]*")}(?![a-z0-9])`).test(text.toLowerCase());
   // The subject is the strongest signal ("Re: Practice: redo these from Problem Set 1"); the body and file names are fallbacks.
   const named = setFromText(subject) ?? setFromText(hay);
   if (named) {
     const hits = sets.filter((s) => s.set === named);
-    const byCourse = hits.filter((s) => squash(hay).includes(squash(s.course)));
+    const byCourse = hits.filter((s) => s.course === courseHint || mentions(hay, s.course));
     const pick = hits.length === 1 ? hits[0] : byCourse.length === 1 ? byCourse[0] : undefined;
     if (pick) return { course: pick.course, set: pick.set };
   }
@@ -60,11 +62,13 @@ export async function identifyProblemSet(files: string[], subject = "", body = "
   }), [
     ...files.map(fileBlock),
     { type: "text", text: `Email subject: ${subject || "(none)"}\nEmail text: ${body.slice(0, 1000) || "(none)"}\n\nWhich of these problem sets are the attached pages answering? Match on the questions and topics the pages show.\n${JSON.stringify(sets)}\nUse the exact course and set strings from the list, or null if none fits or you cannot tell.` },
-  ], { model: CHEAP_MODEL, maxTokens: 4000 }).catch(() => null);
+  ], { model: CHEAP_MODEL, maxTokens: 4000 }).catch((e) => { if (e instanceof TerminalModelError) throw e; return null; });
   const hit = r?.is_problem_set_work && sets.find((s) => s.course === r.course && s.set === r.set);
   if (hit) return { course: hit.course, set: hit.set };
   // Last resort: a reply on a session thread (or a subject naming the course) tells us the course; if that course has exactly one problem set, that's the one.
-  const inCourse = courseHint ? sets.filter((s) => s.course === courseHint) : sets.filter((s) => squash(hay).includes(squash(s.course)));
+  // Never override a set the email names explicitly (PS2) with the course's only other one.
+  if (named) return null;
+  const inCourse = courseHint ? sets.filter((s) => s.course === courseHint) : sets.filter((s) => mentions(hay, s.course));
   return inCourse.length === 1 ? { course: inCourse[0].course, set: inCourse[0].set } : null;
 }
 
@@ -159,21 +163,28 @@ export async function gradeProblemSet(target: Target, files: string[], note = ""
   if (!problems.length) throw new UserError("None of the practice parts match that problem set.");
   const notes = await q<{ slug: string; title: string; markdown: string }>(`select slug, title, markdown from notes where course = $1 order by slug`, [target.course]);
   // Official PDFs are a bonus (graphs, point values): if one can't be read (permissions, moved file), grade without it rather than fail the whole message.
-  const given = (await officialFiles(target.course, target.set)).filter((f) => { try { fs.accessSync(f, fs.constants.R_OK); fs.closeSync(fs.openSync(f, "r")); return true; } catch { console.error(`   ⚠ can't read an official PDF, grading without it`); return false; } });
-  // Official solutions exist if every part has one on record, or a solutions PDF is attached to cover parts ingestion left blank.
-  // A problem-only PDF is not a solution source.
-  const solutionPdf = given.some((f) => /solution|soln|answer/i.test(path.basename(f)));
-  const official = problems.every((p) => !!p.solution?.trim()) || solutionPdf;
+  const readable = (await officialFiles(target.course, target.set)).filter((f) => { try { fs.closeSync(fs.openSync(f, "r")); return true; } catch { console.error(`   ⚠ can't read an official PDF, grading without it`); return false; } });
+  const dbSolutions = problems.every((p) => !!p.solution?.trim());
 
-  const blocks: Block[] = [{ type: "text", text: `Course ${target.course}, ${target.set}. ${official ? "Official solutions are available." : "There are NO official solutions for some or all parts."}` }];
-  for (const f of given) blocks.push({ type: "text", text: `[Official material: ${path.basename(f)}]` }, fileBlock(f));
-  if (wanted) blocks.push({ type: "text", text: "This is a practice redo: the student re-did only the parts listed in <problems>. Grade only those parts; the rest of the set is out of scope. Do not mark anything else wrong." });
-  blocks.push({ type: "text", text: `<problems>\n${JSON.stringify(problems)}\n</problems>` });
-  blocks.push({ type: "text", text: `<notes>\n${notes.map((n) => `${n.slug} | ${n.title} | sections: ${[...n.markdown.matchAll(/^## (.+)$/gm)].map((m) => m[1]).slice(0, 12).join("; ")}`).join("\n")}\n</notes>` });
-  files.forEach((f, i) => blocks.push({ type: "text", text: `[Student submission, file ${i + 1} of ${files.length}: ${path.basename(f)}]` }, fileBlock(f)));
-  blocks.push({ type: "text", text: `${note ? `The student's email said: "${note.slice(0, 800)}"\n\n` : ""}Grade the student's submission above, part by part.` });
-
-  const g = await askJSON(GradeSchema, blocks, { system: GRADER, maxTokens: 24000, effort: "medium" });
+  const ask = (given: string[]) => {
+    // Official solutions exist if every part has one on record, or a solutions PDF is attached to cover parts ingestion left blank.
+    // A problem-only PDF is not a solution source.
+    const official = dbSolutions || given.some((f) => /solution|soln|answer/i.test(path.basename(f)));
+    const blocks: Block[] = [{ type: "text", text: `Course ${target.course}, ${target.set}. ${official ? "Official solutions are available." : "There are NO official solutions for some or all parts."}` }];
+    for (const f of given) blocks.push({ type: "text", text: `[Official material: ${path.basename(f)}]` }, fileBlock(f));
+    if (wanted) blocks.push({ type: "text", text: "This is a practice redo: the student re-did only the parts listed in <problems>. Grade only those parts; the rest of the set is out of scope. Do not mark anything else wrong." });
+    blocks.push({ type: "text", text: `<problems>\n${JSON.stringify(problems)}\n</problems>` });
+    blocks.push({ type: "text", text: `<notes>\n${notes.map((n) => `${n.slug} | ${n.title} | sections: ${[...n.markdown.matchAll(/^## (.+)$/gm)].map((m) => m[1]).slice(0, 12).join("; ")}`).join("\n")}\n</notes>` });
+    files.forEach((f, i) => blocks.push({ type: "text", text: `[Student submission, file ${i + 1} of ${files.length}: ${path.basename(f)}]` }, fileBlock(f)));
+    blocks.push({ type: "text", text: `${note ? `The student's email said: "${note.slice(0, 800)}"\n\n` : ""}Grade the student's submission above, part by part.` });
+    return askJSON(GradeSchema, blocks, { system: GRADER, maxTokens: 24000, effort: "medium" }).then((g) => ({ g, official }));
+  };
+  // An official PDF the provider can't parse shouldn't sink the grade: retry once without it (the stored solutions still apply).
+  const { g, official } = await ask(readable).catch((e) => {
+    if (e instanceof TerminalModelError || !readable.length) throw e;
+    console.error("   ⚠ grading with the official PDFs failed, retrying without them");
+    return ask([]);
+  });
 
   const byKey = new Map(g.parts.map((p) => [key(p.number), p]));
   const slugs = new Set(notes.map((n) => n.slug));
