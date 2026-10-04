@@ -303,7 +303,7 @@ export async function ingest(only?: string) {
       if ((await q(`select 1 from documents where hash = $1`, [hash])).length) continue;
       const t = transcribe(path.join(CONTENT_DIR, course), url);
       if (!t) continue;
-      const src: Src = { abs: url, rel: url, kind: "video", hash, isNew: true, topic, toks: tokensOf(t.title ?? `video ${hash.slice(0, 8)}`) };
+      const src: Src = { abs: url, rel: url, kind: "video", hash, isNew: true, topic, toks: tokensOf(t.title ?? `url${hash.slice(0, 8)}`) };
       try { await buildLecture(course, topic, [src]); } catch (e) { console.error(`    ✗ ${(e as Error).message}`); }
     }
   }
