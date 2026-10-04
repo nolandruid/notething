@@ -113,8 +113,8 @@ export async function claimMessage(id: string, kind = "working"): Promise<boolea
     `insert into processed_messages (message_id, kind) values ($1, $2)
      on conflict (message_id) do update set kind = $2, created_at = now()
        where (processed_messages.kind = 'failed' and processed_messages.failures < $3)
-          or (processed_messages.kind = 'working' and processed_messages.created_at < now() - interval '${STALE_CLAIM}')
-     returning message_id`, [id, kind, MAX_FAILURES]);
+          or (processed_messages.kind = 'working' and processed_messages.created_at < now() - $4::interval)
+     returning message_id`, [id, kind, MAX_FAILURES, STALE_CLAIM]);
   return r.length > 0;
 }
 
