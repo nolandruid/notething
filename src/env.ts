@@ -16,6 +16,8 @@ export const opt = (name: string, fallback = ""): string => process.env[name]?.t
 export const ROOT = process.cwd();
 export const CONTENT_DIR = path.join(ROOT, "content");
 export const VAULT_DIR = path.resolve(opt("VAULT_DIR", path.join(ROOT, "vault")));
+/** Name of the Obsidian vault that VAULT_DIR is the root of. Only used to build obsidian:// links in emails. */
+export const OBSIDIAN_VAULT = opt("OBSIDIAN_VAULT");
 export const MODEL = opt("NOTETHING_MODEL", "openai/gpt-6-luna");
 export const CHEAP_MODEL = opt("NOTETHING_CHEAP_MODEL", "openai/gpt-5-nano");
 export const STUDY_HOUR = (() => {

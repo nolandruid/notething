@@ -1,8 +1,8 @@
 import { AgentMailClient } from "agentmail";
-import path from "node:path";
 import { z } from "zod";
 import { getSetting, now, q, setSetting } from "./db.js";
-import { isoDate, need, opt, parseDay, STUDY_HOUR, VAULT_DIR } from "./env.js";
+import { isoDate, need, OBSIDIAN_VAULT, opt, parseDay, STUDY_HOUR } from "./env.js";
+import { latexToText as tex } from "./latex.js";
 import { askJSON } from "./llm.js";
 
 interface Session {
@@ -126,28 +126,33 @@ ${JSON.stringify(problems)}
 
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const para = (s: string) => esc(s).replace(/\n/g, "<br>");
-const notePath = (course: string, slug: string) => path.join(VAULT_DIR, course, `${slug}.md`);
-const obsidian = (p: string) => `obsidian://open?path=${encodeURIComponent(p)}`;
+/** Link that opens a note in Obsidian, or undefined when OBSIDIAN_VAULT isn't set (we never put local file paths in emails). */
+const noteLink = (course: string, slug: string) =>
+  OBSIDIAN_VAULT ? `obsidian://open?vault=${encodeURIComponent(OBSIDIAN_VAULT)}&file=${encodeURIComponent(`${course}/${slug}`)}` : undefined;
 
-function render(s: Session, c: Awaited<ReturnType<typeof composeSession>>) {
+/** The email subject/body copy the model wrote, with its LaTeX turned into readable text. */
+export function render(s: Session, c: Awaited<ReturnType<typeof composeSession>>) {
   const { plan, items, notes, progress } = c;
   const title = (slug: string) => notes.find((n) => n.slug === slug)?.title ?? slug;
+  const opener = tex(plan.opener), task = tex(plan.task);
+  const reads = plan.note_summaries.map((n) => ({ title: title(n.slug), summary: tex(n.summary), link: noteLink(s.course, n.slug) }));
+  const questions = items.map((it, i) => ({ n: i + 1, retry: it.is_retry, question: tex(it.question) }));
   const text = [
-    plan.opener, "", progress, "",
-    `TODAY (~${plan.minutes} min)`, plan.task, "",
-    "READ", ...plan.note_summaries.map((n) => `• ${title(n.slug)} — ${notePath(s.course, n.slug)}\n  ${n.summary}`), "",
-    "QUIZ", ...items.map((it, i) => `${i + 1}. ${it.is_retry ? "[retry] " : ""}${it.question}`), "",
+    opener, "", progress, "",
+    `TODAY (~${plan.minutes} min)`, task, "",
+    "READ", ...reads.map((r) => `• ${r.title}${r.link ? ` — ${r.link}` : ""}\n  ${r.summary}`), "",
+    "QUIZ", ...questions.map((x) => `${x.n}. ${x.retry ? "[retry] " : ""}${x.question}`), "",
     "Reply to this email with your answers (number them 1, 2, 3…). I'll grade them and adjust your plan.",
     "", "— NoteThing",
   ].join("\n");
   const html = `<div style="font-family:-apple-system,Segoe UI,sans-serif;max-width:620px;line-height:1.5;color:#222">
-<p>${para(plan.opener)}</p>
+<p>${para(opener)}</p>
 <p style="background:#fff4ec;border-radius:8px;padding:8px 12px;font-size:14px">${esc(progress)}</p>
-<h3 style="margin-bottom:4px">Today · ~${plan.minutes} min</h3><p>${para(plan.task)}</p>
+<h3 style="margin-bottom:4px">Today · ~${plan.minutes} min</h3><p>${para(task)}</p>
 <h3 style="margin-bottom:4px">Read</h3>
-${plan.note_summaries.map((n) => `<p><a href="${obsidian(notePath(s.course, n.slug))}"><b>${esc(title(n.slug))}</b></a><br><span style="color:#555">${para(n.summary)}</span></p>`).join("\n")}
+${reads.map((r) => `<p>${r.link ? `<a href="${esc(r.link)}"><b>${esc(r.title)}</b></a>` : `<b>${esc(r.title)}</b>`}<br><span style="color:#555">${para(r.summary)}</span></p>`).join("\n")}
 <h3 style="margin-bottom:4px">Quiz</h3>
-<ol>${items.map((it) => `<li style="margin-bottom:8px">${it.is_retry ? '<span style="color:#b4532a">[retry]</span> ' : ""}${para(it.question)}</li>`).join("")}</ol>
+<ol>${questions.map((x) => `<li style="margin-bottom:8px">${x.retry ? '<span style="color:#b4532a">[retry]</span> ' : ""}${para(x.question)}</li>`).join("")}</ol>
 <p><b>Reply to this email with your answers</b> (number them 1, 2, 3…). I'll grade them and adjust your plan.</p>
 <p style="color:#888">— NoteThing</p></div>`;
   return { text, html };
@@ -159,10 +164,10 @@ export async function sendSession(s: Session) {
   const composed = await composeSession(s);
   const { text, html } = render(s, composed);
   const res = await mail().inboxes.messages.send(inbox.id, {
-    to: [to], subject: composed.plan.subject, text, html, labels: ["notething", `session-${s.id}`],
+    to: [to], subject: tex(composed.plan.subject), text, html, labels: ["notething", `session-${s.id}`],
   });
   await q(`update sessions set status = 'sent', sent_message_id = $2, thread_id = $3, sent_at = $4 where id = $1`, [s.id, res.messageId, res.threadId, await now()]);
-  console.log(`✉️  Sent session #${s.id} "${composed.plan.subject}" → ${to} (${composed.items.length} questions)`);
+  console.log(`✉️  Sent session #${s.id} "${tex(composed.plan.subject)}" → ${to} (${composed.items.length} questions)`);
 }
 
 export async function sendNext(): Promise<boolean> {
@@ -189,6 +194,28 @@ export async function fastForward(n: number) {
 }
 
 // ---------- replies & grading ----------
+
+type Grade = z.infer<typeof GradeSchema>;
+
+/** The feedback email for a graded reply; LaTeX from the model is turned into readable text. */
+export function renderGrade(g: Grade, byId: Map<number, QuizItem>, score: string, hasMisses: boolean) {
+  const closing = hasMisses ? "I've added these to your next session so we lock them in." : "Clean sweep. Next session will push a bit further.";
+  const rows = g.results.map((r, i) => {
+    const it = byId.get(r.quiz_item_id);
+    return {
+      n: i + 1, mark: r.correct ? "✅" : "❌", question: tex(it?.question ?? ""), feedback: tex(r.feedback),
+      reexplain: r.reexplain ? tex(r.reexplain) : "", model: !r.correct && it ? tex(it.answer) : "",
+    };
+  });
+  const summary = tex(g.summary);
+  const text = [summary, "", `Score: ${score}`, "", ...rows.map((r) =>
+    `${r.n}. ${r.mark} ${r.question}\n   ${r.feedback}${r.reexplain ? `\n   Quick re-explain: ${r.reexplain}` : ""}${r.model ? `\n   Model answer: ${r.model}` : ""}`),
+  "", closing, "", "— NoteThing"].join("\n");
+  const html = `<div style="font-family:-apple-system,Segoe UI,sans-serif;max-width:620px;line-height:1.5;color:#222">
+<p>${para(summary)}</p><p><b>Score: ${score}</b></p><ol>${rows.map((r) =>
+    `<li style="margin-bottom:10px">${r.mark} ${para(r.question)}<br><span style="color:#444">${para(r.feedback)}</span>${r.reexplain ? `<br><span style="color:#b4532a"><b>Re-explain:</b> ${para(r.reexplain)}</span>` : ""}${r.model ? `<br><span style="color:#555"><b>Model answer:</b> ${para(r.model)}</span>` : ""}</li>`).join("")}</ol><p>${closing}</p><p style="color:#888">— NoteThing</p></div>`;
+  return { text, html };
+}
 
 /** "Nolan <nolan@x.com>" -> "nolan@x.com" (lowercased). */
 const senderAddress = (from: string) => (from.match(/<([^>]+)>/)?.[1] ?? from).trim().toLowerCase();
@@ -243,15 +270,7 @@ export async function pollReplies() {
     const missed = g.results.filter((r) => !r.correct).map((r) => byId.get(r.quiz_item_id)).filter((x): x is QuizItem => !!x);
     const score = `${g.results.length - missed.length}/${g.results.length}`;
 
-    const text = [g.summary, "", `Score: ${score}`, "", ...g.results.map((r, i) => {
-      const it = byId.get(r.quiz_item_id);
-      return `${i + 1}. ${r.correct ? "✅" : "❌"} ${it?.question ?? ""}\n   ${r.feedback}${r.reexplain ? `\n   Quick re-explain: ${r.reexplain}` : ""}${!r.correct && it ? `\n   Model answer: ${it.answer}` : ""}`;
-    }), "", missed.length ? "I've added these to your next session so we lock them in." : "Clean sweep. Next session will push a bit further.", "", "— NoteThing"].join("\n");
-    const html = `<div style="font-family:-apple-system,Segoe UI,sans-serif;max-width:620px;line-height:1.5;color:#222">
-<p>${para(g.summary)}</p><p><b>Score: ${score}</b></p><ol>${g.results.map((r) => {
-      const it = byId.get(r.quiz_item_id);
-      return `<li style="margin-bottom:10px">${r.correct ? "✅" : "❌"} ${para(it?.question ?? "")}<br><span style="color:#444">${para(r.feedback)}</span>${r.reexplain ? `<br><span style="color:#b4532a"><b>Re-explain:</b> ${para(r.reexplain)}</span>` : ""}${!r.correct && it ? `<br><span style="color:#555"><b>Model answer:</b> ${para(it.answer)}</span>` : ""}</li>`;
-    }).join("")}</ol><p>${missed.length ? "I've added these to your next session so we lock them in." : "Clean sweep. Next session will push a bit further."}</p><p style="color:#888">— NoteThing</p></div>`;
+    const { text, html } = renderGrade(g, byId, score, missed.length > 0);
 
     await mail().inboxes.messages.reply(inbox.id, reply.messageId, { text, html });
     await q(`update sessions set status = 'graded' where id = $1`, [s.id]);
