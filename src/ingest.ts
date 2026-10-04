@@ -1,10 +1,10 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import mammoth from "mammoth";
 import { z } from "zod";
 import { ensureCourse, q } from "./db.js";
 import { CHEAP_MODEL, CONTENT_DIR, isoDate, opt, slugify, VAULT_DIR } from "./env.js";
+import { readDocx } from "./docx.js";
 import { askJSON, fileBlock, isImage, type Block } from "./llm.js";
 import { isVideo, transcribe, transcriptText } from "./transcribe.js";
 
@@ -62,7 +62,7 @@ function kindFromName(file: string): Kind | undefined {
 async function kindFromModel(file: string): Promise<Kind> {
   try {
     const r = await askJSON(z.object({ kind: z.enum(["notes", "slides", "syllabus", "problemset", "student_work"]) }), [
-      await contentBlock(file),
+      ...(await contentBlocks(file)),
       { type: "text", text: `Classify this course file "${path.basename(file)}": syllabus (course outline/test dates), notes (professor's lecture notes, handwritten or typed), slides (lecture slide deck), problemset (assignment questions or official solutions), student_work (a student's own submitted answers).` },
     ], { model: CHEAP_MODEL, maxTokens: 256 });
     return r.kind;
@@ -72,12 +72,19 @@ async function kindFromModel(file: string): Promise<Kind> {
   }
 }
 
-async function contentBlock(file: string): Promise<Block> {
+/** A file as model input. .docx becomes text (with equations as LaTeX) plus its pictures, labelled "image N". */
+async function contentBlocks(file: string): Promise<Block[]> {
   if (/\.docx$/i.test(file)) {
-    const { value } = await mammoth.extractRawText({ path: file });
-    return { type: "text", text: `<typed_notes file="${path.basename(file)}">\n${value}\n</typed_notes>` };
+    const { text, images } = await readDocx(file);
+    return [
+      { type: "text", text: `<typed_notes file="${path.basename(file)}">\n${text}\n</typed_notes>` },
+      ...images.flatMap((im): Block[] => [
+        { type: "text", text: `[${im.name} from ${path.basename(file)}, as marked in the text above]` },
+        { type: "image_url", image_url: { url: `data:${im.mime};base64,${im.data.toString("base64")}` } },
+      ]),
+    ];
   }
-  return fileBlock(file);
+  return [fileBlock(file)];
 }
 
 async function discover(course: string): Promise<{ srcs: Src[]; urls: { url: string; topic: string }[] }> {
@@ -117,7 +124,7 @@ const SyllabusSchema = z.object({
 
 async function ingestSyllabus(course: string, s: Src) {
   console.log(`  ▸ syllabus: ${s.rel}`);
-  const r = await askJSON(SyllabusSchema, [await contentBlock(s.abs), {
+  const r = await askJSON(SyllabusSchema, [...(await contentBlocks(s.abs)), {
     type: "text",
     text: `Today is ${isoDate(new Date())}. Extract every test, midterm, quiz and exam from this syllabus with its date (infer the year from context) and the topics it covers. If topics aren't listed per test, infer them from the course schedule (cumulative finals cover everything).`,
   }], { maxTokens: 8000 });
@@ -146,7 +153,7 @@ const ProblemsSchema = z.object({
 
 async function ingestProblemSet(course: string, set: string, files: Src[]) {
   console.log(`  ▸ problem set ${set}: ${files.map((f) => f.rel).join(", ")}`);
-  const r = await askJSON(ProblemsSchema, [...(await Promise.all(files.map((f) => contentBlock(f.abs)))), {
+  const r = await askJSON(ProblemsSchema, [...(await Promise.all(files.map((f) => contentBlocks(f.abs)))).flat(), {
     type: "text",
     text: "These are a problem set and (possibly) its official solutions. Extract each problem/sub-part with the concept it tests, the full question, and the official solution (null if not provided). Use LaTeX $...$ for math.",
   }]);
@@ -166,7 +173,7 @@ async function ingestStudentWork(course: string, s: Src) {
   const set = setOf(s.abs);
   console.log(`  ▸ student work (${set}): ${s.rel}`);
   const probs = await q(`select number, topic, question, solution from problems where course = $1 and set_name = $2 order by number`, [course, set]);
-  const r = await askJSON(StudentSchema, [await contentBlock(s.abs), {
+  const r = await askJSON(StudentSchema, [...(await contentBlocks(s.abs)), {
     type: "text",
     text: `This is the student's own submitted ${set}. Compare each answer to the official solutions below and mark it correct or not. Be fair: partially correct with the key idea = correct.\n\n${JSON.stringify(probs)}`,
   }], { maxTokens: 8000 });
@@ -191,17 +198,41 @@ const NoteSchema = z.object({
   })),
 });
 
-const NOTE_SYSTEM = `You turn a professor's course materials into excellent Obsidian study notes for a student.
+const NOTE_SYSTEM = `You turn a professor's course materials into excellent Obsidian study notes for a student who will be tested on them.
+
 Format rules:
 - '# <Lecture title>' then sections with '## ' headings following the lecture's structure.
-- Under EACH section: first the cleaned-up content (faithful transcription of the professor's notes as tidy bullets, with every formula in LaTeX $...$ or $$...$$), THEN a callout explaining it in plain English:
+- Under EACH section: first the cleaned-up content (faithful, tidy bullets; every formula in LaTeX $...$ or $$...$$), THEN a callout that genuinely helps the student understand it:
   > [!explain]
-  > <intuitive explanation, why it matters, a quick example>
+  > <2-4 sentences: the intuition in plain English, WHY it works or matters, and one concrete example with real numbers (use the lecture's own numbers where it has them). Add a short "Watch out:" line when students typically slip (sign errors, which intercept moves, mixing up axes).>
+  Do not just restate the bullets above it.
 - Cite sources inline: page numbers like (p. 4) for PDFs, timestamps like (12:34) for the lecture video.
 - Use [[wikilinks]] for key concepts (e.g. [[Budget constraint]], [[Opportunity cost]]).
-- For every graph/diagram in the source, put a placeholder line {{figure:<id>}} where it belongs and add a matching entry to "figures" with a clean SVG redraw (viewBox, labeled axes, curves, labels; no scripts) and a text description.
-- End with '## Key terms' — a bullet list of terms with one-line definitions.
-Be accurate. Do not invent content that isn't supported by the sources.`;
+- The typed notes arrive as text with equations already converted to LaTeX, plus the pictures pasted in them labelled "image N" (those are the professor's graphs). Read the pictures and the scanned handwriting; they hold the graphs and the worked examples.
+- For every graph/diagram, put a placeholder line {{figure:<id>}} where it belongs and add a matching "figures" entry with an SVG redraw and a text description. SVG rules, follow them exactly:
+  * ONE graph per figure (never several panels in one SVG). To show a change, overlay before (gray, dashed) and after (blue, solid) on the same axes and label each.
+  * <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 380" font-family="sans-serif" font-size="14">. Plot area: x from 70 to 470, y from 30 to 320 (origin at 70,320). Compute every coordinate from a linear scale you pick for that graph (e.g. pixels = 70 + x*k); do not eyeball. Lines that must be parallel get identical slopes; a line that pivots about an intercept keeps that intercept at exactly the same pixel point.
+  * Axes with arrowheads and axis names (e.g. x₁, x₂, F, G). Put the axis name just past each arrow tip, inside the viewBox (text-anchor="end" if needed). Mark every intercept or key point the notes give with its value on the axis (e.g. 20, 100) and a small dot.
+  * Text labels must not overlap lines, dots or each other, and must stay fully inside the viewBox: put them in empty space beside the thing they name, give them a white halo (stroke="#fff" stroke-width="4" paint-order="stroke"), and use text-anchor="end" near the right edge.
+  * Shaded regions (e.g. the budget set: everything on or below the budget line, down to the axes) use <polygon> whose vertices you list explicitly, with a light fill and fill-opacity 0.25; check it covers the intended side of the line. No scripts, no external references.
+  * The graph must match the numbers in the note exactly (check intercepts, slopes, direction of every shift).
+- In JSON strings, write every LaTeX backslash doubled (\\\\frac, \\\\beta, \\\\times) so it survives parsing.
+- End with '## Key terms': a bullet list of terms with one-line definitions.
+Be accurate and complete: carry over every definition, formula, worked example and exercise from the sources. Do not invent content the sources don't support, and if something is truly illegible say so once rather than guessing. Don't write meta-commentary about the source files.`;
+
+/** LaTeX commands that start with "n": inside math, a newline followed by one of these was really `\\nu`, `\\neq`, ... */
+const N_COMMANDS = /\n(?=(?:u|eq|e|abla|ot|i|leq|geq|less|gtr|mid|parallel|subseteq|Rightarrow|rightarrow|exists|ewline|cong|sim|warrow|earrow|vdash|atural)(?![a-zA-Z]))/g;
+
+/**
+ * Strip control characters and repair LaTeX commands whose backslash was eaten as a JSON escape (\f, \b, \t, \r,
+ * and \n inside math). Newlines outside math are real Markdown line breaks and are left alone.
+ */
+export function cleanMarkdown(md: string) {
+  return md
+    .replace(/\$\$[\s\S]+?\$\$|\$[^$]+?\$/g, (math) => math.replace(N_COMMANDS, "\\n"))
+    .replace(/\f/g, "\\f").replace(/\x08/g, "\\b").replace(/\t(?=[a-zA-Z])/g, "\\t").replace(/\r(?=[a-zA-Z])/g, "\\r")
+    .replace(/[\x00-\x08\x0b\x0e-\x1f]/g, "");
+}
 
 function validSvg(svg: string) {
   const s = svg.trim();
@@ -223,7 +254,7 @@ async function buildLecture(course: string, topic: string, group: Src[]) {
     if (g.kind === "video") {
       const t = transcribe(courseDir, g.abs);
       if (t) blocks.push({ type: "text", text: `<lecture_video_transcript source="${g.rel}"${t.title ? ` title="${t.title}"` : ""} duration_s="${t.duration}">\n${transcriptText(t)}\n</lecture_video_transcript>` });
-    } else blocks.push(await contentBlock(g.abs));
+    } else blocks.push(...(await contentBlocks(g.abs)));
   }
   if (!blocks.length) { console.warn("    ! no usable sources, skipping"); return; }
   blocks.push({
@@ -235,12 +266,12 @@ Typed notes (if present) are the most accurate text; the scanned handwritten PDF
 
   const assets = path.join(VAULT_DIR, course, "assets");
   fs.mkdirSync(assets, { recursive: true });
-  let md = r.markdown;
+  let md = cleanMarkdown(r.markdown);
   for (const f of r.figures) {
     const file = `${slug}-${slugify(f.id)}.svg`;
     const svg = f.svg.includes("xmlns=") ? f.svg : f.svg.replace(/<svg/i, '<svg xmlns="http://www.w3.org/2000/svg"');
     const embed = validSvg(svg)
-      ? (fs.writeFileSync(path.join(assets, file), svg.trim()), `![[assets/${file}]]\n*${f.description}*`)
+      ? (fs.writeFileSync(path.join(assets, file), svg.trim()), `![[assets/${file}|560]]\n*${f.description}*`)
       : `> [!graph]\n> ${f.description.replace(/\n/g, "\n> ")}`;
     md = md.split(`{{figure:${f.id}}}`).join(embed);
   }
@@ -248,7 +279,7 @@ Typed notes (if present) are the most accurate text; the scanned handwritten PDF
   const fm = [
     "---", `course: ${course}`, `lecture: ${JSON.stringify(topic || r.title)}`,
     `source:`, ...group.map((g) => `  - ${JSON.stringify(g.rel)}`),
-    `tags: [${["notething", course, ...r.tags.map(slugify)].join(", ")}]`, `created: ${isoDate(new Date())}`, "---", "",
+    `tags: [${[...new Set(["notething", course, ...r.tags.map(slugify).filter((tag) => tag !== slugify(course))])].join(", ")}]`, `created: ${isoDate(new Date())}`, "---", "",
   ].join("\n");
   const full = fm + md.trim() + "\n";
   fs.mkdirSync(path.join(VAULT_DIR, course), { recursive: true });
@@ -308,4 +339,4 @@ export async function ingest(only?: string) {
     }
   }
 }
-export const _test = { tokensOf, kindFromName, topicOf, groupLectures, setOf, sameLecture };
+export const _test = { cleanMarkdown, tokensOf, kindFromName, topicOf, groupLectures, setOf, sameLecture };
