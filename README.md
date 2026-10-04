@@ -65,7 +65,7 @@ Your course materials never enter this repo: `content/`, `vault/` and `.env` are
 
 ## How we use CodeRabbit
 
-Every change lands through a pull request, and CodeRabbit reviews each one. The setup lives in [`.coderabbit.yaml`](.coderabbit.yaml).
+Every change lands through a pull request, and CodeRabbit automatically reviews every non-draft one. The setup lives in [`.coderabbit.yaml`](.coderabbit.yaml).
 
 - **Review context:** a walkthrough with sequence diagrams, a review effort estimate, related issues and PRs, and suggested labels (`feature`, `fix`, `privacy`, `coach`, `ingest`, ...).
 - **A privacy check that can fail a PR:** the custom pre-merge check "No personal data or course content" fails if a PR adds course material, generated notes, student or professor names, local absolute paths, or secrets. A second check, "Model output is validated", warns when model responses are used without a zod schema.
@@ -79,7 +79,7 @@ Every change lands through a pull request, and CodeRabbit reviews each one. The 
 - [OpenRouter](https://openrouter.ai): one API for the models that read handwriting and graphs, write notes, quizzes and grades
 - [Neon](https://neon.tech): serverless Postgres for courses, notes, sessions and attempts
 - [AgentMail](https://agentmail.to): the coach's inbox; sends sessions and receives your replies
-- [CodeRabbit](https://coderabbit.ai): reviews every PR
+- [CodeRabbit](https://coderabbit.ai): automatically reviews every non-draft PR
 - [faster-whisper](https://github.com/SYSTRAN/faster-whisper): lecture transcription
 
 ## License
