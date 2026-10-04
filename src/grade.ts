@@ -5,6 +5,7 @@ import { q } from "./db.js";
 import { CHEAP_MODEL, CONTENT_DIR, opt } from "./env.js";
 import { askJSON, fileBlock, type Block } from "./llm.js";
 import { COACH, esc, noteLink, pushRetries, type Retry } from "./mail.js";
+import { UserError } from "./redact.js";
 
 // ---------- which problem set is this? ----------
 
@@ -138,7 +139,7 @@ async function officialFiles(course: string, set: string): Promise<string[]> {
 /** Grade the student's files (PDFs / photos) against one problem set. */
 export async function gradeProblemSet(target: Target, files: string[], note = "", skipped: string[] = []): Promise<Report> {
   const problems = await q<Problem>(`select number, topic, question, solution from problems where course = $1 and set_name = $2 order by id`, [target.course, target.set]);
-  if (!problems.length) throw new Error(`No ${target.set} problems for ${target.course}; run pnpm ingest first.`);
+  if (!problems.length) throw new UserError("No problems are ingested for that problem set; run pnpm ingest first.");
   const notes = await q<{ slug: string; title: string; markdown: string }>(`select slug, title, markdown from notes where course = $1 order by slug`, [target.course]);
   const given = await officialFiles(target.course, target.set);
   // Official solutions exist if every part has one on record, or a solutions PDF is attached to cover parts ingestion left blank.

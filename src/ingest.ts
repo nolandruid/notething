@@ -7,6 +7,7 @@ import { CHEAP_MODEL, CONTENT_DIR, isoDate, opt, slugify, VAULT_DIR } from "./en
 import { readDocx } from "./docx.js";
 import { askJSON, fileBlock, isImage, type Block } from "./llm.js";
 import { isVideo, transcribe, transcriptText } from "./transcribe.js";
+import { errLabel } from "./redact.js";
 
 type Kind = "notes" | "slides" | "syllabus" | "video" | "problemset" | "student_work";
 interface Src { abs: string; rel: string; kind: Kind; hash: string; isNew: boolean; topic: string; toks: string[] }
@@ -67,7 +68,7 @@ async function kindFromModel(file: string): Promise<Kind> {
     ], { model: CHEAP_MODEL, maxTokens: 256 });
     return r.kind;
   } catch (e) {
-    console.warn(`  ! Couldn't classify ${path.basename(file)} (${(e as Error).message}); treating as notes`);
+    console.warn(`  ! Couldn't classify a file (${errLabel(e)}); treating as notes`);
     return "notes";
   }
 }
@@ -131,7 +132,7 @@ async function ingestSyllabus(course: string, s: Src) {
   for (const t of r.tests)
     await q(`insert into tests (course, name, date, topics) values ($1,$2,$3,$4)
              on conflict (course, name) do update set date = excluded.date, topics = excluded.topics`, [course, t.name, t.date, t.topics]);
-  console.log(`    ✓ ${r.tests.length} tests: ${r.tests.map((t) => `${t.name} (${t.date ?? "TBD"})`).join(", ")}`);
+  console.log(`    ✓ ${r.tests.length} tests`);
   await record(course, s);
 }
 
@@ -180,7 +181,7 @@ async function ingestStudentWork(course: string, s: Src) {
   await q(`delete from seed_results where course = $1 and source = $2`, [course, s.rel]);
   for (const x of r.results) await q(`insert into seed_results (course, topic, correct, source, note) values ($1,$2,$3,$4,$5)`, [course, x.topic, x.correct, s.rel, `${set} Q${x.number}: ${x.note}`]);
   const missed = r.results.filter((x) => !x.correct);
-  console.log(`    ✓ ${r.results.length - missed.length}/${r.results.length} correct${missed.length ? `; weak: ${[...new Set(missed.map((m) => m.topic))].join(", ")}` : ""}`);
+  console.log(`    ✓ student work graded; ${missed.length} part(s) to revisit`);
   await record(course, s);
 }
 
@@ -325,7 +326,7 @@ export async function ingest(only?: string) {
 
     const lectureSrcs = srcs.filter((s) => s.kind === "notes" || s.kind === "slides" || s.kind === "video");
     for (const g of groupLectures(lectureSrcs)) if (g.some((s) => s.isNew)) {
-      try { await buildLecture(course, g[0].topic, g); } catch (e) { console.error(`    ✗ ${(e as Error).message}`); }
+      try { await buildLecture(course, g[0].topic, g); } catch (e) { console.error(`    ✗ ${errLabel(e)}`); }
     }
 
     // Lecture videos listed by URL in videos.txt: each becomes its own lecture note.
@@ -335,7 +336,7 @@ export async function ingest(only?: string) {
       const t = transcribe(path.join(CONTENT_DIR, course), url);
       if (!t) continue;
       const src: Src = { abs: url, rel: url, kind: "video", hash, isNew: true, topic, toks: tokensOf(t.title ?? `url${hash.slice(0, 8)}`) };
-      try { await buildLecture(course, topic, [src]); } catch (e) { console.error(`    ✗ ${(e as Error).message}`); }
+      try { await buildLecture(course, topic, [src]); } catch (e) { console.error(`    ✗ ${errLabel(e)}`); }
     }
   }
 }
