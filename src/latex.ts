@@ -90,7 +90,7 @@ function command(c: Cursor): string {
     const a = arg(c).trim();
     return /^[\w.]+$/.test(a) ? `√${a}` : `√(${a})`;
   }
-  if (name === "text" || name === "mbox" || name === "textbf" || name === "textit") return rawGroup(c).replace(/ /g, SP);
+  if (name === "text" || name === "mbox") return rawGroup(c).replace(/ /g, SP);
   if (SPACE_CMDS.has(name)) return " ";
   if (WRAPPERS.has(name)) return arg(c);
   if (name === "left" || name === "right" || name === "big" || name === "Big" || name === "bigg") { // \left( ... \right) -> ( ... )
