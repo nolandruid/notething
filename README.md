@@ -54,6 +54,7 @@ pnpm ingest [course]     # files -> Obsidian notes in vault/<course>/, tests, pr
 pnpm plan [course]       # build the session schedule toward each test
 pnpm send-next           # email the next due session
 pnpm poll                # grade quiz replies and emailed problem sets, send feedback, re-weight the plan
+pnpm practice [course]   # email the problem-set parts you missed as questions to redo (--dry-run prints it); the photo reply is graded on just those parts
 pnpm grade <file...>     # dry run: grade a problem set PDF/photos and print the report (no email)
 pnpm fast-forward 3      # demo: jump the clock and send the next 3 sessions now
 pnpm start               # loop: ingest new files, send due sessions, poll replies every 60s
