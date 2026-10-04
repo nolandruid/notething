@@ -4,7 +4,7 @@ import { z } from "zod";
 import { q } from "./db.js";
 import { CHEAP_MODEL, CONTENT_DIR, opt } from "./env.js";
 import { askJSON, fileBlock, type Block } from "./llm.js";
-import { COACH, esc, notePath, obsidian, pushRetries, type Retry } from "./mail.js";
+import { COACH, esc, noteLink, pushRetries, type Retry } from "./mail.js";
 
 // ---------- which problem set is this? ----------
 
@@ -238,7 +238,7 @@ export function renderReport(r: Report): { text: string; html: string } {
     "BY QUESTION", ...rows.map((x) => `Q${x.n}  ${x.score.padEnd(5)} ${x.icons}   ${x.topic}`), "",
     ...(bad.length ? ["WHAT TO FIX", ...bad.flatMap((p) => [`Q${p.number} ${ICON[p.status]} ${p.topic}${p.points_possible != null ? ` (${pts(p.points_earned ?? 0)}/${pts(p.points_possible)})` : ""}`, ...detail(p).map((l) => `   ${l}`), ""])] : ["Nothing to fix. That is a clean set.", ""]),
     ...(r.topFixes.length ? ["TOP THINGS TO WORK ON", ...r.topFixes.map((t, i) => `${i + 1}. ${f(t.title)}: ${f(t.detail)}`), ""] : []),
-    ...(r.review.length ? ["REVIEW", ...r.review.map((n) => `• ${n.title}${n.section ? ` › ${n.section}` : ""} (${f(n.why)}): ${notePath(r.course, n.slug)}`), ""] : []),
+    ...(r.review.length ? ["REVIEW", ...r.review.map((n) => `• ${n.title}${n.section ? ` › ${n.section}` : ""} (${f(n.why)})${noteLink(r.course, n.slug) ? `: ${noteLink(r.course, n.slug)}` : ""}`), ""] : []),
     bad.length ? "I've added the parts you missed to your upcoming sessions so we lock them in." : "Next session will push a bit further.", "", "— NoteThing",
   ].join("\n");
 
@@ -252,7 +252,7 @@ ${caveat ? `<p style="background:#fff8e1;border-radius:8px;padding:8px 12px;font
 ${rows.map((x) => `<tr><td style="${td}"><b>${esc(x.n)}</b></td><td style="${td}">${esc(x.topic)}</td><td style="${td};white-space:nowrap">${esc(x.score)}</td><td style="${td};white-space:nowrap">${esc(x.icons)}</td></tr>`).join("\n")}</table>
 ${bad.length ? `<h3 style="margin-bottom:4px">What to fix</h3>${bad.map((p) => `<p style="margin:8px 0">${ICON[p.status]} <b>Q${esc(p.number)}</b> · ${esc(p.topic)}${p.points_possible != null ? ` (${pts(p.points_earned ?? 0)}/${pts(p.points_possible)})` : ""}<br><span style="color:#444">${detail(p).map(esc).join("<br>")}</span></p>`).join("")}` : "<p>Nothing to fix. That is a clean set.</p>"}
 ${r.topFixes.length ? `<h3 style="margin-bottom:4px">Top things to work on</h3><ol>${r.topFixes.map((t) => `<li style="margin-bottom:6px"><b>${esc(f(t.title))}</b>: ${esc(f(t.detail))}</li>`).join("")}</ol>` : ""}
-${r.review.length ? `<h3 style="margin-bottom:4px">Review</h3><ul>${r.review.map((n) => `<li><a href="${obsidian(notePath(r.course, n.slug))}"><b>${esc(n.title)}</b>${n.section ? ` › ${esc(n.section)}` : ""}</a> <span style="color:#555">(${esc(f(n.why))})</span></li>`).join("")}</ul>` : ""}
+${r.review.length ? `<h3 style="margin-bottom:4px">Review</h3><ul>${r.review.map((n) => { const href = noteLink(r.course, n.slug), label = `<b>${esc(n.title)}</b>${n.section ? ` › ${esc(n.section)}` : ""}`; return `<li>${href ? `<a href="${esc(href)}">${label}</a>` : label} <span style="color:#555">(${esc(f(n.why))})</span></li>`; }).join("")}</ul>` : ""}
 <p>${bad.length ? "I've added the parts you missed to your upcoming sessions so we lock them in." : "Next session will push a bit further."}</p><p style="color:#888">— NoteThing</p></div>`;
   return { text, html };
 }

@@ -38,6 +38,7 @@ pnpm migrate
 | `STUDENT_NAME` | Optional: your name, so files like `Jane_Doe_PS1.pdf` are recognized as your own work |
 | `DATABASE_URL` | Neon Postgres connection string |
 | `VAULT_DIR` | Optional: point at your Obsidian vault (default `./vault`) |
+| `OBSIDIAN_VAULT` | Optional: that vault's name in Obsidian. Emails then link each note; without it they show just the note title |
 | `NOTETHING_MODEL` | Any OpenRouter model id that accepts image + file input (default `openai/gpt-6-luna`) |
 | `NOTETHING_CHEAP_MODEL` | Model for file classification (default `openai/gpt-5-nano`) |
 | `STUDY_HOUR` | Local hour sessions are scheduled (default 18) |
